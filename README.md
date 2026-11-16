@@ -1,43 +1,53 @@
-# Kuzelle Invoices
+# Kuzelle: invoices, receipts and payment tracking
 
-Invoice and receipt generator + tracker for Kuzelle.
-Static app (public/) + one Netlify Function (netlify/functions/api.mjs) that stores
-records in Netlify Blobs, Netlify's built-in storage. No other accounts or keys needed.
+Version 3. Static front end (public/) plus one Netlify Function (netlify/functions/api.mjs)
+that stores records in Netlify Blobs. No build step and no framework.
 
-## Folder
-public/                    the app (index.html, offline worker, icons)
-netlify/functions/api.mjs  login check + sync API
-netlify.toml               tells Netlify what to publish
-package.json               the one dependency (@netlify/blobs)
+## What's in the folder
+public/index.html              app shell
+public/styles.css              design system (light and dark themes, document templates)
+public/js/app.js               routes and screens: dashboard, invoices, receipts, clients,
+                               products, reports, settings, login
+public/js/store.js             data layer: records, sync, login, all money and status rules
+public/js/document.js          invoice/receipt layout, multi-page pagination, print, PDF
+public/js/ui.js                dialogs, menus, toasts
+public/js/util.js              dates, currency formatting, icons
+public/js/brand.js             default Kuzelle logo
+public/vendor/                 html2canvas 1.4.1 + jsPDF 2.5.1 (self-hosted, loaded only on PDF export)
+netlify/functions/api.mjs      login check + sync API
+netlify.toml, package.json     Netlify config, one dependency (@netlify/blobs 11.1.7)
 
-## Deploy (free), about 10 minutes
-Drag-and-drop deploys can't run functions, so this goes through GitHub:
+## Upgrading the existing site (from V2)
+Replace the files in your GitHub repository with the contents of this folder and commit.
+Netlify redeploys on its own. Nothing else changes:
+- Environment variables: the same ones. ACCESS_CODE (required), SESSION_SECRET and SESSION_HOURS (optional).
+- No database migration. V1/V2 records are read as they are and never rewritten until you edit them:
+  - an invoice marked "paid" in V1 without a receipt still shows as Paid
+  - a V1 receipt's amount is read from its items
+  - V1 sessions, theme choice and offline data on each device are kept (same storage keys)
+- The API gained one record type, product/<id>. Older records are untouched.
 
-1. github.com: New repository, name it kuzelle-invoices, Private, Create.
-   Click "uploading an existing file" and drag in EVERYTHING inside this folder
-   (public, netlify, netlify.toml, package.json, README.md). Commit.
-2. app.netlify.com: Add new project > Import an existing project > GitHub >
-   pick kuzelle-invoices. Leave the build settings as they are > Deploy.
-3. Project configuration > Environment variables > Add variable:
-      ACCESS_CODE = your 6-digit code          (required)
-      SESSION_SECRET = any long random text    (optional, recommended)
-   Then Deploys > Trigger deploy > Deploy project.
-4. Open the site and enter the code.
+## First deploy (new site)
+1. GitHub: new private repository, upload everything in this folder, commit.
+2. Netlify: Add new project > Import from GitHub > pick the repository > Deploy.
+3. Project configuration > Environment variables: ACCESS_CODE = a 6-digit code.
+   Then Deploys > Trigger deploy.
 
-Later changes: edit or re-upload files on GitHub and Netlify redeploys by itself.
+## How the money works
+- Totals are computed in pesewas/cents (integers), each line rounded once. No float drift.
+- A receipt is a payment record. Invoice status is derived, never set by hand:
+  Draft, Issued, Sent, Partially paid, Paid, Overdue, Cancelled.
+- Several payments per invoice. A payment larger than the balance is refused,
+  and a repeat payment (same invoice, amount and date) asks for confirmation.
+- Receipts are voided, not deleted. A voided receipt stays in history and stops counting.
+- An invoice with any payment record can't be deleted (cancel it instead), so receipts are never orphaned.
+- Dashboard and reports use one currency (the default in Settings) and say when documents
+  in other currencies are left out.
 
-## Changing the code
-Change ACCESS_CODE in Netlify and redeploy. Everyone is signed out and uses the new code.
-Keep it 6 digits, or change CODE_LENGTH near the top of the script in public/index.html.
-
-## How data works
-- Every save is written to the device first, then uploaded within a second.
-- Offline? Keep working. Changes queue and upload when the connection returns.
-- All devices see the same records. If two devices edit the same document, the latest edit wins.
-- First login on a device that has records from the old version: the app offers to upload them.
-- Raw data: Netlify > your project > Blobs > store "kuzelle".
-- Settings > Export backup still works and is worth doing monthly.
-
-## Free-plan budget
-Netlify's free plan gives 300 credits a month. Each production deploy costs 15;
-everyday use of the app costs a few. Avoid redeploying dozens of times a month.
+## Known limits
+- Netlify Blobs has no multi-record transactions. Two devices saving at the same moment use
+  last-write-wins per record; numbers are picked from existing records, so a clash needs two
+  people creating a document in the same second on different devices.
+- PDFs are rendered from the on-screen layout as high-resolution images (crisp in print).
+  Text in the PDF is not selectable.
+- Netlify free plan: 300 credits/month. Each production deploy costs 15.

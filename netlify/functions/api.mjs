@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 export const config = { path: '/api/*' };
 
 const MAX_OPS = 200;
-const MAX_RECORD_BYTES = 250_000;
+const MAX_RECORD_BYTES = 400_000;   // settings may carry a small logo image
 const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const LOGIN_LIMIT = 6;            // wrong codes allowed per window, per visitor
 const LOGIN_WINDOW_MS = 10 * 60e3;
@@ -39,7 +39,8 @@ function authed(req) {
 
 const data = () => getStore({ name: 'kuzelle', consistency: 'strong' });
 const auth = () => getStore({ name: 'kuzelle-auth', consistency: 'strong' });
-const keyFor = (kind, id) => kind === 'settings' ? 'settings' : kind === 'doc' ? `doc/${id}` : kind === 'client' ? `client/${id}` : null;
+const PREFIX = { doc: 'doc/', client: 'client/', product: 'product/' };
+const keyFor = (kind, id) => kind === 'settings' ? 'settings' : PREFIX[kind] ? PREFIX[kind] + id : null;
 
 async function mapLimit(items, n, fn) {
   const out = new Array(items.length); let i = 0;
@@ -55,8 +56,8 @@ async function readAll() {
     const { blobs } = await store.list({ prefix });
     return (await mapLimit(blobs, 24, b => store.get(b.key, { type: 'json' }))).filter(Boolean);
   };
-  const [docs, clients, settings] = await Promise.all([read('doc/'), read('client/'), store.get('settings', { type: 'json' })]);
-  return { docs, clients, settings: settings || null, serverTime: Date.now() };
+  const [docs, clients, products, settings] = await Promise.all([read('doc/'), read('client/'), read('product/'), store.get('settings', { type: 'json' })]);
+  return { docs, clients, products, settings: settings || null, serverTime: Date.now() };
 }
 
 async function applyOps(ops) {
