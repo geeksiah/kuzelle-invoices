@@ -1,19 +1,24 @@
 // Document engine. One renderer feeds the live preview, printing and PDF export,
 // so what you see is exactly what the client receives.
 import { $, $$, esc, num, money, fmtDate, amountInWords, fromCents, toCents } from './util.js';
-import { S, totals, balances, invoiceStatus, receiptCents, receiptAmount, findDoc, paymentsFor, isVoid, lineCents } from './store.js';
+import { S, totals, balances, invoiceStatus, receiptCents, receiptAmount, findDoc, paymentsFor, isVoid, lineCents, assetData } from './store.js';
 import { LOGO } from './brand.js';
 
 const W = 794, H = 1123;   // A4 at 96 dpi
 
 /* ---------- building blocks ---------- */
-function logoHTML(s) {
-  if (s.logo === 'none') return `<div class="d-bizname">${esc(s.businessName)}</div>`;
-  return `<img class="d-logo" src="${s.logo || LOGO}" alt="${esc(s.businessName)}">`;
+/* A saved document carries its own copy of the business details (d.biz). Older documents
+   without one fall back to the current Settings. */
+export const bizOf = d => ({ ...S(), ...(d.biz || {}) });
+function logoHTML(d, s) {
+  const id = d.biz ? d.biz.logoId : undefined;
+  const src = id === undefined ? (s.logo === 'none' ? 'none' : s.logo || LOGO) : id === 'none' ? 'none' : id === '' ? LOGO : (assetData(id) || S().logo || LOGO);
+  if (src === 'none') return `<div class="d-bizname">${esc(s.businessName)}</div>`;
+  return `<img class="d-logo" src="${src}" alt="${esc(s.businessName)}">`;
 }
 const lines = arr => arr.filter(Boolean).map(esc).join('\n');
 function headBlock(d, s, title) {
-  return `<div class="d-blk d-head">${logoHTML(s)}<div class="d-title"><div class="d-kind">${title}</div><div class="d-no">No. ${esc(d.number || '—')}</div></div></div>`;
+  return `<div class="d-blk d-head">${logoHTML(d, s)}<div class="d-title"><div class="d-kind">${title}</div><div class="d-no">No. ${esc(d.number || '—')}</div></div></div>`;
 }
 function contBlock(d, s, title) {
   return `<div class="d-blk"><div class="d-cont"><b>${title} ${esc(d.number || '')}</b><span>${esc(s.businessName)}, continued</span></div></div>`;
@@ -30,7 +35,7 @@ const rowHTML = (i, k, cur) => `<div class="d-blk"><div class="d-tr"><span class
 const visibleItems = d => (d.items || []).filter(i => String(i.desc || '').trim() || num(i.price));
 
 function invoiceBlocks(d) {
-  const s = S(), cur = d.currency || s.currency, t = totals(d), m = n => esc(money(n, cur));
+  const s = bizOf(d), cur = d.currency || s.currency, t = totals(d), m = n => esc(money(n, cur));
   const st = invoiceStatus(d), b = balances(d);
   const items = visibleItems(d);
   const pays = paymentsFor(d);
@@ -65,7 +70,7 @@ function invoiceBlocks(d) {
 }
 
 function receiptBlocks(r) {
-  const s = S(), cur = r.currency || s.currency, m = n => esc(money(n, cur));
+  const s = bizOf(r), cur = r.currency || s.currency, m = n => esc(money(n, cur));
   const amount = receiptAmount(r);
   const inv = r.linkedInvoiceId && findDoc(r.linkedInvoiceId);
   const legacyItems = (r.amount === undefined || r.amount === null || r.amount === '') && visibleItems(r).length;
@@ -105,7 +110,7 @@ function measureHost() {
 }
 const tplClass = d => `tpl-${d.template || S().template || 'classic'}`;
 export function paginate(d) {
-  const isR = d.type === 'receipt', s = S();
+  const isR = d.type === 'receipt', s = bizOf(d);
   const blocks = isR ? receiptBlocks(d) : invoiceBlocks(d);
   const title = isR ? 'Receipt' : 'Invoice';
   const cont = contBlock(d, s, title);
@@ -168,6 +173,7 @@ async function ensureLibs() {
   if (!window.html2canvas) await loadScript('vendor/html2canvas.min.js');
   if (!window.jspdf) await loadScript('vendor/jspdf.umd.min.js');
 }
+export function pagesHTML(d) { return paginate(d).join(''); }
 export async function makePDF(d) {
   await ensureLibs();
   if (document.fonts && document.fonts.ready) await document.fonts.ready;

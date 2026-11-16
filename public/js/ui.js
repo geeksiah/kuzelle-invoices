@@ -18,11 +18,11 @@ export function toast(msg, opts = {}) {
 /* ---------- dialogs ---------- */
 export const dialogs = [];
 let lastFocus = null;
-export function openDialog({ title, body, foot, width, onMount, onClose, bare }) {
+export function openDialog({ title, body, foot, width, onMount, onClose, bare, full, cls }) {
   lastFocus = document.activeElement;
   const o = document.createElement('div');
   o.className = 'overlay';
-  o.innerHTML = `<div class="overlay-bg"></div><div class="dialog" role="dialog" aria-modal="true"${title ? ' aria-labelledby="dlg-t"' : ''}${width ? ` style="--w:${width}px"` : ''}>
+  o.innerHTML = `<div class="overlay-bg"></div><div class="dialog${full ? ' full' : ''}${cls ? ' ' + cls : ''}" role="dialog" aria-modal="true"${title ? ' aria-labelledby="dlg-t"' : ''}${width ? ` style="--w:${width}px"` : ''}>
     <div class="grabber"></div>
     ${bare ? body : `${title ? `<div class="dlg-head"><h2 id="dlg-t">${title}</h2><button class="icon-btn" data-close aria-label="Close">${ic('close')}</button></div>` : ''}
     <div class="dlg-body">${body || ''}</div>${foot ? `<div class="dlg-foot">${foot}</div>` : ''}`}</div>`;

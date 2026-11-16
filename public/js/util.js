@@ -110,6 +110,9 @@ export function amountInWords(amount, cur) {
 
 /* ---------- icons (1.6px stroke, 24 grid) ---------- */
 export const P = {
+  home: '<path d="M3.5 10.2 12 3.5l8.5 6.7V19a1.5 1.5 0 0 1-1.5 1.5h-4.5V15h-5v5.5H5A1.5 1.5 0 0 1 3.5 19z"/>',
+  minus: '<path d="M5 12h14"/>',
+  filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
   dashboard: '<rect x="3.5" y="3.5" width="7" height="8" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="5" rx="1.5"/><rect x="13.5" y="11.5" width="7" height="9" rx="1.5"/><rect x="3.5" y="14.5" width="7" height="6" rx="1.5"/>',
   invoice: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
   receipt: '<path d="M6 3h12v18l-2.5-1.6L13 21l-1-.7-1 .7-2.5-1.6L6 21z"/><path d="M9.5 8h5M9.5 12h5"/>',

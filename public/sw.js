@@ -1,6 +1,6 @@
 // Offline support. Same-origin files are network-first so a new deploy is picked
 // up immediately; the cache is only a fallback when offline. API calls are never cached.
-const CACHE = 'kuzelle-v3';
+const CACHE = 'kuzelle-v4';
 const SHELL = ['./', './index.html', './styles.css', './js/app.js', './js/util.js', './js/store.js', './js/document.js', './js/ui.js', './js/brand.js',
   './vendor/html2canvas.min.js', './vendor/jspdf.umd.min.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon-32.png'];
 

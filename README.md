@@ -1,6 +1,6 @@
 # Kuzelle: invoices, receipts and payment tracking
 
-Version 3. Static front end (public/) plus one Netlify Function (netlify/functions/api.mjs)
+Version 4. Static front end (public/) plus one Netlify Function (netlify/functions/api.mjs)
 that stores records in Netlify Blobs. No build step and no framework.
 
 ## What's in the folder
@@ -17,7 +17,19 @@ public/vendor/                 html2canvas 1.4.1 + jsPDF 2.5.1 (self-hosted, loa
 netlify/functions/api.mjs      login check + sync API
 netlify.toml, package.json     Netlify config, one dependency (@netlify/blobs 11.1.7)
 
-## Upgrading the existing site (from V2)
+## What changed in version 4
+- Creating an invoice is one short screen: client, items, total, Create invoice.
+  Number, dates, tax, payment details and notes come from Settings
+  ("Customize invoice" changes them for one invoice).
+- Phones get a bottom tab bar (Home, Invoices, Receipts, Clients, Settings) and full-screen
+  sheets for picking a client, adding an item and previewing the document.
+- Invoice and receipt numbers are claimed from the server when saved (POST /api/claim),
+  so two people creating invoices at the same moment never get the same number.
+- Each saved invoice and receipt keeps a copy of your business details (doc.biz) and logo
+  (stored once as asset/<id>), so changing Settings never rewrites documents already issued.
+  Documents from earlier versions have no copy and keep using the current Settings.
+
+## Upgrading the existing site
 Replace the files in your GitHub repository with the contents of this folder and commit.
 Netlify redeploys on its own. Nothing else changes:
 - Environment variables: the same ones. ACCESS_CODE (required), SESSION_SECRET and SESSION_HOURS (optional).
@@ -25,7 +37,7 @@ Netlify redeploys on its own. Nothing else changes:
   - an invoice marked "paid" in V1 without a receipt still shows as Paid
   - a V1 receipt's amount is read from its items
   - V1 sessions, theme choice and offline data on each device are kept (same storage keys)
-- The API gained one record type, product/<id>. Older records are untouched.
+- The API gained record types product/<id> and asset/<id>, number claims under num/, and the /api/claim route. Older records are untouched.
 
 ## First deploy (new site)
 1. GitHub: new private repository, upload everything in this folder, commit.
@@ -45,9 +57,9 @@ Netlify redeploys on its own. Nothing else changes:
   in other currencies are left out.
 
 ## Known limits
-- Netlify Blobs has no multi-record transactions. Two devices saving at the same moment use
-  last-write-wins per record; numbers are picked from existing records, so a clash needs two
-  people creating a document in the same second on different devices.
+- Netlify Blobs has no multi-record transactions. Two devices editing the same record at the same
+  moment use last-write-wins. Numbers are safe: each one is claimed with a write-if-absent key
+  and confirmed by reading it back. Offline, a device uses the next local number.
 - PDFs are rendered from the on-screen layout as high-resolution images (crisp in print).
   Text in the PDF is not selectable.
 - Netlify free plan: 300 credits/month. Each production deploy costs 15.

@@ -24,7 +24,7 @@ export function defaultSettings() {
     currency: 'GHS', taxRate: 0, taxLabel: 'VAT',
     invPrefix: 'INV-', rctPrefix: 'RCT-', nextInv: 1, nextRct: 1, numberDigits: 4,
     dueDays: 14, payment: '', showPayment: true, defaultNotes: '', defaultTerms: '',
-    footer: 'Thank you for choosing Kuzelle.', template: 'classic', countryCode: '233', updatedAt: 0
+    footer: 'Thank you for choosing Kuzelle.', template: 'classic', countryCode: '233', defaultMethod: 'Mobile Money', updatedAt: 0
   };
 }
 export function normalize(d) {
@@ -35,6 +35,7 @@ export function normalize(d) {
     settings: s,
     clients: Array.isArray(d && d.clients) ? d.clients.filter(c => c && c.id) : [],
     products: Array.isArray(d && d.products) ? d.products.filter(p => p && p.id) : [],
+    assets: Array.isArray(d && d.assets) ? d.assets.filter(a => a && a.id) : [],
     docs: Array.isArray(d && d.docs) ? d.docs.filter(x => x && x.id && (x.type === 'invoice' || x.type === 'receipt')) : []
   };
 }
@@ -64,6 +65,7 @@ export function putClient(c, quiet) { c.updatedAt = Date.now(); upsert(DB.client
 export function delClient(id) { DB.clients = DB.clients.filter(x => x.id !== id); saveLocal(); enqueue('client', id, 'del'); changed(); }
 export function putProduct(p) { p.updatedAt = Date.now(); upsert(DB.products, p); saveLocal(); enqueue('product', p.id, 'put', p); changed(); return p; }
 export function delProduct(id) { DB.products = DB.products.filter(x => x.id !== id); saveLocal(); enqueue('product', id, 'del'); changed(); }
+export function putAsset(a) { a.updatedAt = Date.now(); upsert(DB.assets, a); saveLocal(); enqueue('asset', a.id, 'put', a); return a; }
 export function putSettings(quiet) { S().updatedAt = Date.now(); saveLocal(); enqueue('settings', 'settings', 'put', S()); if (!quiet) changed(); }
 function enqueueEverything() {
   DB.docs.forEach(d => enqueue('doc', d.id, 'put', d));
@@ -78,6 +80,7 @@ export function replaceAll(next) {
   DB.docs.filter(d => !kd.has(d.id)).forEach(d => enqueue('doc', d.id, 'del'));
   DB.clients.filter(c => !kc.has(c.id)).forEach(c => enqueue('client', c.id, 'del'));
   DB.products.filter(p => !kp.has(p.id)).forEach(p => enqueue('product', p.id, 'del'));
+  next.assets = DB.assets.concat((next.assets || []).filter(a => !DB.assets.some(x => x.id === a.id)));
   DB = next;
   const now = Date.now();
   DB.docs.forEach(d => { d.updatedAt = now; enqueue('doc', d.id, 'put', d); });
@@ -187,7 +190,8 @@ function applyRemote(remote) {
   };
   const next = normalize({
     settings: pending.has('settings:settings') ? S() : (remote.settings || S()),
-    docs: merge('doc', remote.docs), clients: merge('client', remote.clients), products: merge('product', remote.products)
+    docs: merge('doc', remote.docs), clients: merge('client', remote.clients), products: merge('product', remote.products),
+    assets: merge('asset', remote.assets || [])
   });
   const diff = JSON.stringify(next) !== JSON.stringify(DB);
   DB = next; saveLocal();
@@ -234,7 +238,7 @@ export function balances(inv) {
   return { total: fromCents(total), paid: fromCents(paid), balance: fromCents(Math.max(total - paid, 0)), totalCents: total, paidCents: paid, balanceCents: Math.max(total - paid, 0) };
 }
 export const STATUS = {
-  draft: 'Draft', issued: 'Issued', sent: 'Sent', partial: 'Partially paid', paid: 'Paid', overdue: 'Overdue', cancelled: 'Cancelled', void: 'Void', receipt: 'Receipt'
+  draft: 'Draft', issued: 'Unpaid', sent: 'Sent', partial: 'Part paid', paid: 'Paid', overdue: 'Late', cancelled: 'Cancelled', void: 'Void', receipt: 'Receipt'
 };
 /* Status is derived from the record and its payments, never assigned by hand. */
 export function invoiceStatus(inv) {
@@ -252,21 +256,55 @@ export const countsAsIssued = inv => inv.status !== 'draft' && !inv.cancelledAt;
 
 /* Numbering: prefix + zero-padded counter. The next number looks at existing records,
    so a number is never reused, even across devices. */
-export function formatNumber(type, n) {
-  const s = S(), prefix = type === 'invoice' ? s.invPrefix : s.rctPrefix;
-  return prefix + String(n).padStart(Math.max(1, num(s.numberDigits) || 4), '0');
+/* Prefixes may contain {YYYY}, e.g. "INV-{YYYY}-" gives INV-2026-0001. */
+export function resolvedPrefix(type) {
+  const s = S(), raw = String((type === 'invoice' ? s.invPrefix : s.rctPrefix) ?? '');
+  return raw.replace(/\{YYYY\}/g, String(new Date().getFullYear()));
 }
-export function nextNumber(type) {
-  const s = S(), prefix = type === 'invoice' ? s.invPrefix : s.rctPrefix;
+const digits = () => Math.min(8, Math.max(1, num(S().numberDigits) || 4));
+export const formatNumber = (type, n) => resolvedPrefix(type) + String(n).padStart(digits(), '0');
+function nextSeq(type) {
+  const s = S(), prefix = resolvedPrefix(type);
   let max = 0;
   for (const d of DB.docs) {
     if (d.type !== type || !String(d.number || '').startsWith(prefix)) continue;
     const n = parseInt(String(d.number).slice(prefix.length), 10);
     if (n > max) max = n;
   }
-  const start = Math.max(1, Math.floor(num(type === 'invoice' ? s.nextInv : s.nextRct)) || 1);
-  return formatNumber(type, Math.max(start, max + 1));
+  return Math.max(Math.max(1, Math.floor(num(type === 'invoice' ? s.nextInv : s.nextRct)) || 1), max + 1);
 }
+export const nextNumber = type => formatNumber(type, nextSeq(type));
+/* Final numbers are claimed from the server when saving, so two devices can never get the
+   same one. Offline or without the server, the next local number is used. */
+export async function claimNumber(type, docId, exact) {
+  if (exact && numberTaken(exact, docId)) return { taken: true };
+  const local = () => ({ number: exact || nextNumber(type), local: true });
+  if (MODE !== 'cloud' || !token() || !navigator.onLine) return local();
+  try {
+    const r = await api('/claim', { method: 'POST', body: JSON.stringify({ type, prefix: resolvedPrefix(type), digits: digits(), start: nextSeq(type), docId, exact: exact || undefined }) });
+    return { number: r.number };
+  } catch (e) {
+    if (e.status === 409) return { taken: true };
+    if (e.status === 401) { emit('unauthorized'); throw e; }
+    return local();
+  }
+}
+/* Business details are copied onto each document when it is saved, so changing Settings
+   later never rewrites an invoice that was already issued. */
+function logoAssetId() {
+  const l = S().logo;
+  if (!l) return '';
+  if (l === 'none') return 'none';
+  let h = 5381; for (let i = 0; i < l.length; i += 3) h = ((h << 5) + h + l.charCodeAt(i)) | 0;
+  const id = `logo-${(h >>> 0).toString(36)}-${l.length.toString(36)}`;
+  if (!DB.assets.some(a => a.id === id)) putAsset({ id, kind: 'logo', data: l });
+  return id;
+}
+export function snapshotBiz() {
+  const s = S();
+  return { businessName: s.businessName, address: s.address, phone: s.phone, email: s.email, website: s.website, taxId: s.taxId, payment: s.payment, taxLabel: s.taxLabel, footer: s.footer, logoId: logoAssetId() };
+}
+export const assetData = id => (DB.assets.find(a => a.id === id) || {}).data;
 export const numberTaken = (number, id) => DB.docs.some(d => d.id !== id && String(d.number).trim().toLowerCase() === String(number).trim().toLowerCase());
 
 /* Clients */
@@ -335,8 +373,8 @@ export function newInvoice(client) {
     issueDate: t, terms: String(days), dueDate: addDays(t, days), currency: s.currency,
     items: [{ id: uid(), desc: '', qty: 1, price: '' }],
     discount: '', discountType: 'pct', taxRate: num(s.taxRate) || '',
-    notes: s.defaultNotes || '', termsText: s.defaultTerms || '', showPayment: s.showPayment !== false,
-    createdAt: Date.now()
+    notes: s.defaultNotes || '', termsText: s.defaultTerms || '', showPayment: s.showPayment !== false, footer: s.footer || '',
+    template: s.template || 'classic', createdAt: Date.now()
   };
 }
 export function newReceipt(inv, client) {
@@ -344,11 +382,11 @@ export function newReceipt(inv, client) {
   const r = {
     id: uid(), type: 'receipt', number: nextNumber('receipt'), issueDate: t, currency: s.currency,
     clientId: null, client: { name: '', email: '', phone: '', address: '' },
-    amount: '', paymentMethod: 'Mobile Money', reference: '', description: '', notes: '', linkedInvoiceId: null, createdAt: Date.now()
+    amount: '', paymentMethod: s.defaultMethod || 'Mobile Money', reference: '', description: '', notes: '', linkedInvoiceId: null, createdAt: Date.now()
   };
   if (inv) {
     const b = balances(inv);
-    Object.assign(r, { linkedInvoiceId: inv.id, invoiceNumber: inv.number, currency: inv.currency, clientId: inv.clientId, client: { ...inv.client }, amount: b.balance ? String(b.balance) : '', description: `Invoice ${inv.number}` });
+    Object.assign(r, { linkedInvoiceId: inv.id, invoiceNumber: inv.number, currency: inv.currency, clientId: inv.clientId, client: { ...inv.client }, amount: b.balance ? b.balance.toFixed(2) : '', description: `Invoice ${inv.number}` });
   } else if (client) {
     Object.assign(r, { clientId: client.id, client: { name: client.name, email: client.email || '', phone: client.phone || '', address: client.address || '' } });
   }

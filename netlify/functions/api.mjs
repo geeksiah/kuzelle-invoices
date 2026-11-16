@@ -39,7 +39,7 @@ function authed(req) {
 
 const data = () => getStore({ name: 'kuzelle', consistency: 'strong' });
 const auth = () => getStore({ name: 'kuzelle-auth', consistency: 'strong' });
-const PREFIX = { doc: 'doc/', client: 'client/', product: 'product/' };
+const PREFIX = { doc: 'doc/', client: 'client/', product: 'product/', asset: 'asset/' };
 const keyFor = (kind, id) => kind === 'settings' ? 'settings' : PREFIX[kind] ? PREFIX[kind] + id : null;
 
 async function mapLimit(items, n, fn) {
@@ -56,8 +56,8 @@ async function readAll() {
     const { blobs } = await store.list({ prefix });
     return (await mapLimit(blobs, 24, b => store.get(b.key, { type: 'json' }))).filter(Boolean);
   };
-  const [docs, clients, products, settings] = await Promise.all([read('doc/'), read('client/'), read('product/'), store.get('settings', { type: 'json' })]);
-  return { docs, clients, products, settings: settings || null, serverTime: Date.now() };
+  const [docs, clients, products, assets, settings] = await Promise.all([read('doc/'), read('client/'), read('product/'), read('asset/'), store.get('settings', { type: 'json' })]);
+  return { docs, clients, products, assets, settings: settings || null, serverTime: Date.now() };
 }
 
 async function applyOps(ops) {
@@ -78,6 +78,38 @@ async function applyOps(ops) {
     await store.setJSON(key, op.data, { metadata: { updatedAt: ts } });
     return { ...res, ok: true };
   });
+}
+
+/* Document numbers are claimed atomically: each number is a key written with onlyIfNew,
+   so two devices can never receive the same number, even at the same instant. */
+const PREFIX_RE = /^[A-Za-z0-9 _.#\-]{0,24}$/;
+async function claimNumber(body) {
+  const { type, prefix = '', digits = 4, start = 1, docId, exact } = body || {};
+  if (!['invoice', 'receipt'].includes(type) || !ID_RE.test(String(docId)) || !PREFIX_RE.test(prefix)) return json({ error: 'bad_request' }, 400);
+  const store = data();
+  // Write-if-absent, then read back after a short pause and accept only if the stored owner is us.
+  // onlyIfNew is atomic on Netlify; the read-back is a second guard against any racing writer.
+  const claim = async number => {
+    const key = `num/${type}/${encodeURIComponent(number.trim().toLowerCase())}`;
+    const id = String(docId);
+    if ((await store.get(key)) === id) return true;          // already ours (retry after a dropped response)
+    const res = await store.set(key, id, { onlyIfNew: true });
+    if (!res || !res.modified) return false;
+    await new Promise(r => setTimeout(r, 40));
+    return (await store.get(key)) === id;
+  };
+  if (exact) {
+    const n = String(exact).trim();
+    if (!n || n.length > 40) return json({ error: 'bad_request' }, 400);
+    return (await claim(n)) ? json({ number: n }) : json({ error: 'taken' }, 409);
+  }
+  const d = Math.min(8, Math.max(1, Number(digits) || 4));
+  let n = Math.max(1, Math.floor(Number(start) || 1));
+  for (let i = 0; i < 500; i++, n++) {
+    const number = prefix + String(n).padStart(d, '0');
+    if (await claim(number)) return json({ number });
+  }
+  return json({ error: 'exhausted' }, 409);
 }
 
 async function login(req, context) {
@@ -109,6 +141,7 @@ export default async (req, context) => {
     if (route === 'login' && req.method === 'POST') return await login(req, context);
     if (!authed(req)) return json({ error: 'unauthorized' }, 401);
     if (route === 'sync' && req.method === 'GET') return json(await readAll());
+    if (route === 'claim' && req.method === 'POST') { let b = {}; try { b = await req.json(); } catch {} return await claimNumber(b); }
     if (route === 'sync' && req.method === 'POST') {
       let body = {};
       try { body = await req.json(); } catch { return json({ error: 'bad_json' }, 400); }

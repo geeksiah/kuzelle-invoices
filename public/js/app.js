@@ -1,4 +1,5 @@
-// Kuzelle — application shell, routes and views.
+// Kuzelle — application shell, routes and screens.
+// Principle: configure once in Settings, create documents effortlessly. Each screen has one job.
 import {
   $, $$, esc, uid, num, toCents, fromCents, readJSON, writeJSON, mq, initials, plural, debounce,
   todayISO, addDays, daysBetween, fmtDate, fmtShort, monthLabel, monthsBetween, periodRange, inRange,
@@ -7,12 +8,12 @@ import {
 import {
   CONFIG, UIKEY, ATTKEY, bus, DB, S, MODE, syncState, lastSync, firstSyncDone, pendingCount,
   putDoc, delDoc, putClient, delClient, putProduct, delProduct, putSettings, replaceAll, normalize, defaultSettings,
-  login, canResume, sessionValid, endSession, sync, scheduleSync,
+  login, canResume, sessionValid, endSession, sync,
   findDoc, findClient, invoices, receipts, byDateDesc, totals, balances, invoiceStatus, docStatus, STATUS,
-  receiptAmount, receiptCents, paymentsFor, isVoid, countsAsIssued, nextNumber, numberTaken, formatNumber,
+  receiptAmount, receiptCents, paymentsFor, isVoid, countsAsIssued, nextNumber, numberTaken, formatNumber, claimNumber, snapshotBiz,
   findDuplicateClient, clientSummary, aggregate, monthlySeries, newInvoice, newReceipt, METHODS, TERMS, lineCents
 } from './store.js';
-import { renderPreview, paginate, printDoc, downloadPDF, pdfFile, docFileName } from './document.js';
+import { renderPreview, paginate, printDoc, downloadPDF, pdfFile } from './document.js';
 import { toast, openDialog, closeAllDialogs, confirmDialog, showMenu, closeMenu, showTip, hideTip, setFieldError, clearErrors, skeletonRows, dialogs } from './ui.js';
 import { LOGO, MARK } from './brand.js';
 
@@ -21,6 +22,8 @@ import { LOGO, MARK } from './brand.js';
    ===================================================================== */
 let UI = readJSON(UIKEY, {}) || {};
 const saveUI = () => writeJSON(UIKEY, UI);
+const isPhone = () => mq('(max-width:767px)');
+const isWide = () => mq('(min-width:1100px)');
 const effectiveTheme = () => { const t = UI.theme || 'system'; return t === 'system' ? (mq('(prefers-color-scheme: dark)') ? 'dark' : 'light') : t; };
 function applyTheme() {
   const dark = effectiveTheme() === 'dark';
@@ -29,18 +32,15 @@ function applyTheme() {
   $$('[data-act="toggle-theme"]').forEach(b => { b.innerHTML = ic(dark ? 'sun' : 'moon'); b.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme'); b.title = dark ? 'Light theme' : 'Dark theme'; });
   $$('[data-theme-opt]').forEach(b => b.classList.toggle('on', b.dataset.themeOpt === (UI.theme || 'system')));
 }
-function setTheme(t) { UI.theme = t; saveUI(); applyTheme(); if (current.name === 'dashboard' || current.name === 'reports') renderRoute(true); }
+function setTheme(t) { UI.theme = t; saveUI(); applyTheme(); if (current.name === 'reports') renderRoute(true); }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if ((UI.theme || 'system') === 'system') applyTheme(); });
 
 /* =====================================================================
-   Shell
+   Shell: sidebar on desktop and tablet, bottom tabs on phones
    ===================================================================== */
-const NAV = [
-  { group: '', items: [['dashboard', 'Dashboard', 'dashboard']] },
-  { group: 'Billing', items: [['invoices', 'Invoices', 'invoice'], ['receipts', 'Receipts', 'receipt']] },
-  { group: 'Customers', items: [['clients', 'Clients', 'users'], ['products', 'Products & services', 'box']] },
-  { group: 'Insights', items: [['reports', 'Reports', 'chart']] }
-];
+const NAV_MAIN = [['dashboard', 'Home', 'home'], ['invoices', 'Invoices', 'invoice'], ['receipts', 'Receipts', 'receipt'], ['clients', 'Clients', 'users']];
+const NAV_MORE = [['reports', 'Reports', 'chart'], ['items', 'Saved items', 'box']];
+const navLink = ([k, l, i]) => `<a class="nav-link" href="#/${k}" data-nav="${k}" title="${l}">${ic(i)}<span class="nav-text">${l}</span><span class="count" data-count="${k}"></span></a>`;
 function sidebarHTML() {
   return `
   <div class="sb-head">
@@ -50,9 +50,9 @@ function sidebarHTML() {
   </div>
   <div class="sb-scroll">
     <div class="sb-cta"><a class="btn btn-primary btn-block" href="#/invoices/new" title="New invoice">${ic('plus')}<span class="nav-text">New invoice</span></a></div>
-    ${NAV.map(g => `<div class="sb-group">${g.group ? `<div class="sb-label">${g.group}</div>` : ''}${g.items.map(([k, l, i]) =>
-      `<a class="nav-link" href="#/${k}" data-nav="${k}" title="${l}">${ic(i)}<span class="nav-text">${l}</span><span class="count" data-count="${k}"></span></a>`).join('')}</div>`).join('')}
-    <div class="sb-group" style="margin-top:auto"><a class="nav-link" href="#/settings" data-nav="settings" title="Settings">${ic('settings')}<span class="nav-text">Settings</span></a></div>
+    <div class="sb-group">${NAV_MAIN.map(navLink).join('')}</div>
+    <div class="sb-group"><div class="sb-label">More</div>${NAV_MORE.map(navLink).join('')}</div>
+    <div class="sb-group" style="margin-top:auto">${navLink(['settings', 'Settings', 'settings'])}</div>
   </div>
   <div class="sb-foot">
     <div class="sb-row">
@@ -61,46 +61,49 @@ function sidebarHTML() {
     </div>
     <button class="account" data-act="account" aria-haspopup="menu">
       <span class="avatar" id="acct-av"></span>
-      <span class="who"><b class="ellipsis" id="acct-name"></b><small>${MODE === 'cloud' ? 'Synced workspace' : 'This device'}</small></span>
+      <span class="who"><b class="ellipsis" id="acct-name"></b><small>${MODE === 'cloud' ? 'Synced on all devices' : 'This device'}</small></span>
     </button>
   </div>`;
 }
+const TABS = [['dashboard', 'Home', 'home'], ['invoices', 'Invoices', 'invoice'], ['receipts', 'Receipts', 'receipt'], ['clients', 'Clients', 'users'], ['settings', 'Settings', 'settings']];
+const tabbarHTML = () => TABS.map(([k, l, i]) => `<a class="tab-i" href="#/${k}" data-nav="${k}">${ic(i)}<span>${l}</span></a>`).join('');
 function paintAccount() {
   const s = S();
   const av = $('#acct-av');
   if (av) av.innerHTML = s.logo && s.logo !== 'none' ? `<img src="${s.logo}" alt="">` : esc(initials(s.businessName));
   const n = $('#acct-name'); if (n) n.textContent = s.businessName || 'Kuzelle';
-  const open = invoices().filter(d => countsAsIssued(d) && balances(d).balanceCents > 0).length;
-  const c = $('[data-count="invoices"]'); if (c) c.textContent = open || '';
+  const late = invoices().filter(d => invoiceStatus(d) === 'overdue').length;
+  const c = $('[data-count="invoices"]'); if (c) c.textContent = late ? `${late} late` : '';
 }
 function paintSync() {
-  const label = { synced: 'Synced', syncing: 'Saving…', offline: 'Offline', error: 'Not synced', local: 'Saved on this device' }[MODE === 'cloud' ? syncState : 'local'] || '';
+  const label = { synced: 'Saved', syncing: 'Saving…', offline: 'Offline, saved here', error: 'Not saved online', local: 'Saved on this device' }[MODE === 'cloud' ? syncState : 'local'] || '';
   $$('[data-sync]').forEach(el => {
     el.dataset.state = MODE === 'cloud' ? syncState : 'local';
     const t = $('.stxt', el); if (t) t.textContent = label;
-    el.title = syncState === 'synced' && lastSync ? `Synced at ${new Date(lastSync).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : label;
+    el.title = syncState === 'synced' && lastSync ? `Saved online at ${new Date(lastSync).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : label;
   });
 }
 function applySidebarMode() {
-  const app = $('#app');
   const pref = UI.sidebar || (mq('(min-width:1200px)') ? 'expanded' : 'collapsed');
-  app.classList.toggle('collapsed', !mq('(max-width:767px)') && pref === 'collapsed');
+  $('#app').classList.toggle('collapsed', !isPhone() && pref === 'collapsed');
 }
-function setDrawer(open) { $('#app').classList.toggle('drawer-open', open); document.body.classList.toggle('no-scroll', open); }
-['(max-width:767px)', '(min-width:1200px)'].forEach(q => matchMedia(q).addEventListener('change', () => { applySidebarMode(); setDrawer(false); }));
+['(max-width:767px)', '(min-width:1200px)', '(min-width:1100px)'].forEach(q => matchMedia(q).addEventListener('change', () => { applySidebarMode(); if (!$('#app').hidden && !current.parts.includes('new') && !current.parts.includes('edit')) renderRoute(true); }));
 
-function setTopbar({ crumbs = [], actions = '' } = {}) {
+/* topbar: breadcrumbs and search on desktop; back arrow and title on phones */
+function setTopbar({ crumbs = [], actions = '', back = '', search = true, badge = '' } = {}) {
+  const title = crumbs.length ? crumbs[crumbs.length - 1][0] : '';
   $('#topbar').innerHTML = `
-    <button class="icon-btn menu-btn" data-act="drawer" aria-label="Open menu">${ic('menu')}</button>
+    ${back ? `<a class="icon-btn back-btn" href="${back}" aria-label="Back">${ic('chevLeft')}</a>` : ''}
     <nav class="crumbs" aria-label="Breadcrumb">${crumbs.map((c, i) => {
       const last = i === crumbs.length - 1;
       return `${i ? `<span class="hide-sm">${ic('chevRight')}</span>` : ''}${last ? `<span class="cur">${esc(c[0])}</span>` : `<a class="hide-sm" href="${c[1]}">${esc(c[0])}</a>`}`;
-    }).join('')}</nav>
+    }).join('')}${badge}</nav>
     <div class="tb-actions">
-      <div class="gsearch input-affix">${ic('search')}<input class="input" id="gsearch" type="search" placeholder="Search invoices, receipts, clients" autocomplete="off" aria-label="Search"><kbd>⌘K</kbd></div>
-      <button class="icon-btn" data-act="search-mobile" aria-label="Search" style="${mq('(max-width:767px)') ? '' : 'display:none'}">${ic('search')}</button>
+      ${search ? `<div class="gsearch input-affix">${ic('search')}<input class="input" id="gsearch" type="search" placeholder="Search invoices, receipts, clients" autocomplete="off" aria-label="Search"><kbd>⌘K</kbd></div>
+      <button class="icon-btn show-sm" data-act="search-mobile" aria-label="Search">${ic('search')}</button>` : ''}
       ${actions}
     </div>`;
+  document.title = `${title || 'Kuzelle'} · Kuzelle`;
   bindGlobalSearch();
 }
 
@@ -109,15 +112,15 @@ function searchResults(q) {
   q = q.trim().toLowerCase(); if (!q) return [];
   const hit = (...xs) => xs.filter(Boolean).join(' ').toLowerCase().includes(q);
   const inv = invoices().filter(d => hit(d.number, d.client && d.client.name)).sort(byDateDesc).slice(0, 5)
-    .map(d => ({ href: `#/invoices/${d.id}`, icon: 'invoice', label: `${d.number}  ${(d.client && d.client.name) || ''}`, sub: money(totals(d).total, d.currency) }));
+    .map(d => ({ href: `#/invoices/${d.id}`, icon: 'invoice', label: `${(d.client && d.client.name) || 'No client'}  ${d.number}`, sub: money(totals(d).total, d.currency) }));
   const rc = receipts().filter(d => hit(d.number, d.client && d.client.name, d.reference)).sort(byDateDesc).slice(0, 5)
-    .map(d => ({ href: `#/receipts/${d.id}`, icon: 'receipt', label: `${d.number}  ${(d.client && d.client.name) || ''}`, sub: money(receiptAmount(d), d.currency) }));
+    .map(d => ({ href: `#/receipts/${d.id}`, icon: 'receipt', label: `${(d.client && d.client.name) || ''}  ${d.number}`, sub: money(receiptAmount(d), d.currency) }));
   const cl = DB.clients.filter(c => hit(c.name, c.email, c.phone)).slice(0, 5)
     .map(c => ({ href: `#/clients/${c.id}`, icon: 'users', label: c.name, sub: c.phone || c.email || '' }));
   return [['Invoices', inv], ['Receipts', rc], ['Clients', cl]].filter(g => g[1].length);
 }
 function searchPopHTML(groups) {
-  if (!groups.length) return `<div class="menu-label" style="padding:10px">No matches</div>`;
+  if (!groups.length) return `<div class="menu-label" style="padding:12px">Nothing found</div>`;
   return groups.map(([h, items]) => `<div class="menu-label">${h}</div>${items.map(it => `<a class="menu-item" href="${it.href}">${ic(it.icon)}<span class="ellipsis" style="flex:1">${esc(it.label)}</span><span class="muted nowrap">${esc(it.sub)}</span></a>`).join('')}`).join('');
 }
 function bindGlobalSearch() {
@@ -125,9 +128,9 @@ function bindGlobalSearch() {
   const wrap = input.parentElement; let pop = null;
   const close = () => { if (pop) { pop.remove(); pop = null; } };
   const render = () => {
-    const q = input.value; if (!q.trim()) { close(); return; }
+    if (!input.value.trim()) { close(); return; }
     if (!pop) { pop = document.createElement('div'); pop.className = 'search-pop'; wrap.appendChild(pop); }
-    pop.innerHTML = searchPopHTML(searchResults(q));
+    pop.innerHTML = searchPopHTML(searchResults(input.value));
   };
   input.addEventListener('input', render);
   input.addEventListener('focus', render);
@@ -135,19 +138,19 @@ function bindGlobalSearch() {
   input.addEventListener('keydown', e => {
     if (e.key === 'Escape') { input.value = ''; close(); input.blur(); }
     if (e.key === 'Enter') { const a = pop && $('a', pop); if (a) { location.hash = a.getAttribute('href'); input.value = ''; close(); input.blur(); } }
-    if (e.key === 'ArrowDown' && pop) { e.preventDefault(); const a = $('a', pop); if (a) a.focus(); }
   });
   wrap.addEventListener('mousedown', e => { if (e.target.closest('a')) e.preventDefault(); });
   wrap.addEventListener('click', e => { const a = e.target.closest('a'); if (a) { location.hash = a.getAttribute('href'); input.value = ''; close(); } });
 }
 function openMobileSearch() {
   const d = openDialog({
-    title: 'Search', body: `<div class="input-affix">${ic('search')}<input class="input" id="msearch" type="search" placeholder="Invoices, receipts, clients" autocomplete="off" autofocus></div><div id="mres" style="margin-top:10px"></div>`,
+    title: 'Search', full: true,
+    body: `<div class="input-affix">${ic('search')}<input class="input" id="msearch" type="search" placeholder="Name, invoice or receipt number" autocomplete="off"></div><div id="mres" style="margin-top:12px"></div>`,
     onMount(b) {
       const i = $('#msearch', b);
       i.addEventListener('input', () => { $('#mres', b).innerHTML = i.value.trim() ? searchPopHTML(searchResults(i.value)) : ''; });
       b.addEventListener('click', e => { if (e.target.closest('a')) d.close(); });
-      setTimeout(() => i.focus(), 250);
+      setTimeout(() => i.focus(), 280);
     }
   });
 }
@@ -163,19 +166,19 @@ function parseHash(h = location.hash) {
   const [path, qs] = h.replace(/^#\/?/, '').split('?');
   const parts = path.split('/').filter(Boolean);
   const query = Object.fromEntries(new URLSearchParams(qs || ''));
-  // V1 routes
   if (!parts.length || parts[0] === 'home') return { name: 'dashboard', parts: [], query };
   if (parts[0] === 'documents') return { name: 'invoices', parts: [], query };
+  if (parts[0] === 'products') return { name: 'items', parts: [], query };
   if (parts[0] === 'new') return { name: parts[1] === 'receipt' ? 'receipts' : 'invoices', parts: ['new'], query };
   if (parts[0] === 'edit') { const d = findDoc(parts[1]); return { name: d && d.type === 'receipt' ? 'receipts' : 'invoices', parts: [parts[1], 'edit'], query }; }
   return { name: parts[0], parts: parts.slice(1), query };
 }
-export function go(h) { if (location.hash === h) renderRoute(); else location.hash = h; }
+const go = h => { if (location.hash === h) renderRoute(); else location.hash = h; };
 addEventListener('hashchange', async () => {
   if (dirty) {
     const target = location.hash;
     history.replaceState(null, '', lastHash || '#/dashboard');
-    if (!(await confirmDialog({ title: 'Discard unsaved changes?', message: 'Your edits to this document haven’t been saved.', ok: 'Discard', danger: true }))) return;
+    if (!(await confirmDialog({ title: 'Leave without saving?', message: 'What you’ve entered on this screen will be lost.', ok: 'Leave', cancel: 'Keep editing', danger: true }))) return;
     dirty = false;
     location.hash = target;
     return;
@@ -185,13 +188,13 @@ addEventListener('hashchange', async () => {
 addEventListener('beforeunload', e => { if (dirty || (MODE === 'cloud' && pendingCount() && navigator.onLine)) { e.preventDefault(); e.returnValue = ''; } });
 
 const ROUTES = {
-  dashboard: () => viewDashboard(),
+  dashboard: () => viewHome(),
   invoices: ({ parts }) => parts[0] === 'new' ? viewInvoiceEditor(null) : parts[1] === 'edit' ? viewInvoiceEditor(parts[0]) : parts[0] ? viewInvoice(parts[0]) : viewInvoices(),
   receipts: ({ parts, query }) => parts[0] === 'new' ? viewReceiptEditor(null, query) : parts[1] === 'edit' ? viewReceiptEditor(parts[0]) : parts[0] ? viewReceipt(parts[0]) : viewReceipts(),
   clients: ({ parts }) => parts[0] ? viewClient(parts[0]) : viewClients(),
-  products: () => viewProducts(),
+  items: () => viewItems(),
   reports: () => viewReports(),
-  settings: ({ parts }) => viewSettings(parts[0] || 'business')
+  settings: ({ parts }) => viewSettings(parts[0] || '')
 };
 function renderRoute(keep) {
   const r = parseHash();
@@ -199,8 +202,9 @@ function renderRoute(keep) {
   const sameView = keep && r.name === current.name && r.parts.join('/') === current.parts.join('/');
   current = r; lastHash = location.hash;
   if (!keep) { closeAllDialogs(); closeMenu(); dirty = false; }
-  setDrawer(false);
-  $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === r.name));
+  const editing = r.parts.includes('new') || r.parts.includes('edit');
+  document.body.classList.toggle('editing', editing);
+  $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (r.name === 'items' && isPhone() ? 'settings' : r.name)));
   const y = scrollY;
   const view = ROUTES[r.name](r);
   if (!view) return;
@@ -209,7 +213,6 @@ function renderRoute(keep) {
   view.mount && view.mount($('#view'));
   applyTheme(); paintSync(); paintAccount();
   if (sameView) scrollTo(0, y); else scrollTo(0, 0);
-  document.title = `${view.title || 'Kuzelle'} · Kuzelle`;
 }
 /* Re-render after data changes, but never under someone's cursor or over an open editor. */
 let refreshQueued = false;
@@ -227,8 +230,7 @@ bus.addEventListener('storage-error', () => toast('Couldn’t save on this devic
 bus.addEventListener('migrated', () => { UI.migrated = true; saveUI(); });
 bus.addEventListener('migrate', async e => {
   const { counts, resolve } = e.detail;
-  const up = await confirmDialog({ title: 'Move your records online?', message: `This device has ${plural(counts.docs, 'document')} and ${plural(counts.clients, 'client')} that aren’t in the database yet. Upload them so every device sees the same records.`, ok: 'Upload', cancel: 'Start fresh' });
-  resolve(up);
+  resolve(await confirmDialog({ title: 'Move your records online?', message: `This device has ${plural(counts.docs, 'document')} and ${plural(counts.clients, 'client')} that aren’t online yet. Upload them so every device sees the same records.`, ok: 'Upload', cancel: 'Start fresh' }));
 });
 let waitingForFirstSync = false;
 const loadingData = () => MODE === 'cloud' && !firstSyncDone && !DB.docs.length && !DB.clients.length;
@@ -239,28 +241,29 @@ const loadingData = () => MODE === 'cloud' && !firstSyncDone && !DB.docs.length 
 const badge = d => { const s = docStatus(d); return `<span class="badge ${s}">${STATUS[s]}</span>`; };
 const clientName = d => (d.client && d.client.name) || 'No client';
 const emptyHTML = (icon, title, text, btn = '') => `<div class="empty"><div class="e-ic">${ic(icon)}</div><h3>${esc(title)}</h3><p>${esc(text)}</p>${btn}</div>`;
-const pageHead = (title, sub, actions = '') => `<div class="page-head"><div><h1>${esc(title)}</h1>${sub ? `<p>${sub}</p>` : ''}</div><div class="page-actions">${actions}</div></div>`;
-function sortBtn(list, key, label, align = '') {
-  const st = LS[list]; const on = st.sort === key;
-  return `<button class="${on ? 'sorted' : ''}" data-act="sort" data-list="${list}" data-k="${key}" style="${align === 'r' ? 'margin-left:auto' : ''}">${label}${on ? ic(st.dir === 'asc' ? 'sortUp' : 'sortDown') : ''}</button>`;
-}
-function pagerHTML(list, total) {
-  const st = LS[list], per = 25, pages = Math.max(1, Math.ceil(total / per));
-  if (st.page > pages) st.page = pages;
-  const a = (st.page - 1) * per + 1, b = Math.min(total, st.page * per);
-  return `<div class="tbl-foot"><span>${total ? `${a}–${b} of ${total}` : '0 results'}</span>${pages > 1 ? `<div class="pager">
-    <button class="icon-btn sm" data-act="page" data-list="${list}" data-d="-1" ${st.page <= 1 ? 'disabled' : ''} aria-label="Previous page">${ic('chevLeft')}</button>
-    <span>${st.page} / ${pages}</span>
-    <button class="icon-btn sm" data-act="page" data-list="${list}" data-d="1" ${st.page >= pages ? 'disabled' : ''} aria-label="Next page">${ic('chevRight')}</button></div>` : ''}</div>`;
-}
-const pageSlice = (list, arr) => { const st = LS[list]; return arr.slice((st.page - 1) * 25, st.page * 25); };
+const pageHead = (title, sub, actions = '') => `<div class="page-head"><div><h1>${esc(title)}</h1>${sub ? `<p>${sub}</p>` : ''}</div>${actions ? `<div class="page-actions">${actions}</div>` : ''}</div>`;
+const notFound = (kind, back) => ({ topbar: { crumbs: [[kind]], back }, html: `<div class="content">${emptyHTML('alert', `${kind} not found`, 'It may have been deleted on another device.', `<a class="btn btn-secondary" href="${back}">Go back</a>`)}</div>` });
 function sortBy(arr, key, dir, get) { const m = dir === 'asc' ? 1 : -1; return [...arr].sort((a, b) => { const x = get(a, key), y = get(b, key); return (x > y ? 1 : x < y ? -1 : 0) * m || byDateDesc(a, b); }); }
-const PERIODS = [['all', 'All dates'], ['this-month', 'This month'], ['last-month', 'Last month'], ['last-90', 'Last 90 days'], ['this-year', 'This year'], ['last-year', 'Last year'], ['custom', 'Custom range']];
-const periodSelect = (list, st) => `<select class="input" data-lf="period" data-list="${list}" aria-label="Date range">${PERIODS.map(([k, l]) => `<option value="${k}"${st.period === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
-  ${st.period === 'custom' ? `<input class="input" type="date" data-lf="from" data-list="${list}" value="${esc(st.from)}" aria-label="From"><input class="input" type="date" data-lf="to" data-list="${list}" value="${esc(st.to)}" aria-label="To">` : ''}`;
-const rangeOf = st => periodRange(st.period, st);
+/* One row type for every list: readable on a phone, aligned on a desktop. */
+function docRow(d) {
+  const isR = d.type === 'receipt', st = docStatus(d);
+  const amt = isR ? receiptAmount(d) : totals(d).total, b = !isR && balances(d);
+  const sub = isR ? `${d.number}, ${fmtShort(d.issueDate)}${d.paymentMethod ? ', ' + d.paymentMethod : ''}`
+    : st === 'paid' || st === 'cancelled' || st === 'draft' ? `${d.number}, ${fmtShort(d.issueDate)}`
+    : st === 'overdue' ? `${d.number}, was due ${fmtShort(d.dueDate)}` : `${d.number}, due ${fmtShort(d.dueDate)}`;
+  return `<a class="row" href="#/${isR ? 'receipts' : 'invoices'}/${d.id}">
+    <span class="row-ic">${ic(isR ? 'receipt' : 'invoice')}</span>
+    <span class="row-main"><span class="row-t">${esc(clientName(d))}</span><span class="row-s ${st === 'overdue' ? 'late' : ''}">${esc(sub)}</span></span>
+    <span class="row-end"><span class="row-amt" ${isR && isVoid(d) ? 'style="text-decoration:line-through;color:var(--text-3)"' : ''}>${esc(money(amt, d.currency))}</span>
+      ${isR ? (isVoid(d) ? badge(d) : '') : b.paidCents && b.balanceCents ? `<span class="row-s">${esc(money(b.balance, d.currency))} left</span>` : badge(d)}</span>
+  </a>`;
+}
+const rowsHTML = list => `<div class="rows">${list.map(docRow).join('')}</div>`;
+const skeletonList = (n = 5) => `<div class="rows">${Array.from({ length: n }, () => `<div class="row"><span class="row-ic"></span><span class="row-main"><span class="sk" style="width:55%"></span><span class="sk" style="width:35%;margin-top:6px"></span></span><span class="sk" style="width:70px"></span></div>`).join('')}</div>`;
 
-/* ---------- chart ---------- */
+/* =====================================================================
+   Charts (used by Reports)
+   ===================================================================== */
 function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p; return 10 * p; }
 const compact = (v, cur) => symbolOf(cur) + new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(v);
 function drawChart(el, series, cur) {
@@ -292,211 +295,214 @@ function mountChart(el, series, cur) {
 }
 const legend = `<div class="legend"><span><i style="background:var(--chart-b)"></i>Invoiced</span><span><i style="background:var(--chart-a)"></i>Received</span></div>`;
 
+
 /* =====================================================================
-   Dashboard
+   Home: what have I received, what am I owed, what needs attention
    ===================================================================== */
-function viewDashboard() {
-  const s = S(), cur = s.currency, per = UI.dashPeriod || 'this-month', range = periodRange(per);
-  const ag = aggregate(range, cur), now = aggregate(periodRange('all'), cur);
-  const nM = UI.dashMonths === 12 ? 12 : 6, t0 = new Date();
-  const m0 = new Date(t0.getFullYear(), t0.getMonth() - nM + 1, 1);
-  const months = monthsBetween(`${m0.getFullYear()}-${String(m0.getMonth() + 1).padStart(2, '0')}-01`, todayISO());
-  const series = monthlySeries(months, cur);
-  const loading = loadingData();
-  const kv = v => loading ? '<span class="sk" style="height:22px;width:70%;margin-top:4px"></span>' : moneyHTML(v, cur);
+function viewHome() {
+  const s = S(), cur = s.currency, loading = loadingData();
+  if (loading) waitingForFirstSync = true;
+  const month = aggregate(periodRange('this-month'), cur), all = aggregate(periodRange('all'), cur);
+  const today = todayISO(), soon = addDays(today, 7);
+  const late = all.overdueList.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const dueSoon = invoices().filter(d => countsAsIssued(d) && d.currency === cur && balances(d).balanceCents > 0 && d.dueDate >= today && d.dueDate <= soon).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const attention = [...late, ...dueSoon].slice(0, 5);
+  const tab = UI.homeTab || 'invoices';
+  const recent = (tab === 'invoices' ? invoices() : receipts()).sort(byDateDesc).slice(0, 5);
   const hr = new Date().getHours();
   const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
-  const recentInv = invoices().sort(byDateDesc).slice(0, 6);
-  const recentRc = receipts().sort(byDateDesc).slice(0, 6);
-  const invCols = 'minmax(0,1.4fr) 96px 96px 120px 120px 34px';
-  if (loading) waitingForFirstSync = true;
+  const fig = v => loading ? '<span class="sk" style="height:26px;width:60%"></span>' : moneyHTML(v, cur);
   return {
-    title: 'Dashboard',
-    topbar: { crumbs: [['Dashboard']] },
-    html: `<div class="content stack">
-      ${pageHead(greet, `${esc(new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }))}. Here’s where ${esc(s.businessName)} stands.`,
-        `<a class="btn btn-secondary" href="#/clients?new=1">${ic('users')}Add client</a><a class="btn btn-secondary" href="#/receipts/new">${ic('receipt')}New receipt</a><a class="btn btn-primary" href="#/invoices/new">${ic('plus')}New invoice</a>`)}
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:-8px">
-        <div class="seg" role="tablist" aria-label="Period">${[['this-month', 'This month'], ['last-month', 'Last month'], ['this-year', 'This year'], ['all', 'All time']].map(([k, l]) => `<button data-act="dash-period" data-k="${k}" class="${per === k ? 'on' : ''}">${l}</button>`).join('')}</div>
-        ${ag.otherCur ? `<span class="muted" style="font-size:12.5px">Totals in ${cur}. ${plural(ag.otherCur, 'document')} in other currencies are left out.</span>` : ''}
-      </div>
-      <section class="kpis" aria-label="Summary">
-        <div class="kpi"><div class="k-label">Total invoiced</div><div class="k-value num">${kv(ag.invoiced)}</div><div class="k-sub">${plural(ag.invoicedCount, 'invoice')} ${range.label.toLowerCase()}</div></div>
-        <div class="kpi"><div class="k-label">Received</div><div class="k-value num">${kv(ag.received)}</div><div class="k-sub">${plural(ag.payments.length + ag.legacy.length, 'payment')}</div></div>
-        <div class="kpi"><div class="k-label">Outstanding</div><div class="k-value num">${kv(now.outstanding)}</div><div class="k-sub">${plural(now.openCount, 'open invoice')}</div><button class="k-link" data-act="goto-filter" data-f="open" aria-label="Show open invoices"></button></div>
-        <div class="kpi ${now.overdueList.length ? 'alert' : ''}"><div class="k-label">Overdue</div><div class="k-value num">${kv(now.overdue)}</div><div class="k-sub">${plural(now.overdueList.length, 'invoice')} past due</div><button class="k-link" data-act="goto-filter" data-f="overdue" aria-label="Show overdue invoices"></button></div>
-        <div class="kpi"><div class="k-label">Receipts issued</div><div class="k-value num">${loading ? kv(0) : ag.receiptsCount}</div><div class="k-sub">${range.label}</div></div>
+    topbar: { crumbs: [['Home']] },
+    html: `<div class="content narrow-content">
+      <div class="home-hello"><h1>${greet}</h1><p>${esc(new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }))}</p></div>
+      <section class="stats" aria-label="Summary">
+        <a class="stat" href="#/receipts"><span class="stat-l">Money received</span><span class="stat-v num">${fig(month.received)}</span><span class="stat-s">This month</span></a>
+        <button class="stat" data-act="goto-filter" data-f="open"><span class="stat-l">Still owed</span><span class="stat-v num">${fig(all.outstanding)}</span><span class="stat-s">${plural(all.openCount, 'unpaid invoice')}</span></button>
+        <button class="stat ${late.length ? 'alert' : ''}" data-act="goto-filter" data-f="overdue"><span class="stat-l">Late payments</span><span class="stat-v num">${fig(all.overdue)}</span><span class="stat-s">${late.length ? `${plural(late.length, 'invoice')} past due` : 'Nothing late'}</span></button>
       </section>
-      <div class="split-2">
-        <section class="card">
-          <div class="card-head"><div><h2>Financial overview</h2><div class="sub">Invoiced against received, in ${cur}</div></div>
-            <div class="seg">${[[6, '6 months'], [12, '12 months']].map(([k, l]) => `<button data-act="dash-months" data-k="${k}" class="${(UI.dashMonths || 6) === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-          <div class="card-body"><div id="dash-chart"></div><div style="margin-top:10px">${legend}</div></div>
-        </section>
-        <section class="card">
-          <div class="card-head"><h2>Recent receipts</h2><a class="btn btn-ghost btn-sm" href="#/receipts">View all</a></div>
-          <div class="tbl list-plain">${loading ? skeletonRows(5) : recentRc.length ? recentRc.map(r => `<div class="tbl-row" style="--cols:minmax(0,1fr) auto" data-href="#/receipts/${r.id}" tabindex="0" role="link">
-            <div class="cell-2" data-m="a"><span class="cell-main">${esc(clientName(r))}</span><span class="cell-sub">${esc(r.number)}, ${esc(fmtShort(r.issueDate))}${r.linkedInvoiceId ? `, for ${esc((findDoc(r.linkedInvoiceId) || {}).number || r.invoiceNumber || '')}` : ''}</span></div>
-            <div class="cell-2 r" data-m="b" style="align-items:flex-end"><span class="amount" ${isVoid(r) ? 'style="text-decoration:line-through;color:var(--text-3)"' : ''}>${esc(money(receiptAmount(r), r.currency))}</span><span class="cell-sub">${esc(r.paymentMethod || '')}</span></div></div>`).join('')
-            : emptyHTML('receipt', 'No receipts yet', 'Record a payment on an invoice, or issue a standalone receipt.', '<a class="btn btn-secondary btn-sm" href="#/receipts/new">New receipt</a>')}</div>
-        </section>
+      <div class="home-actions">
+        <a class="btn btn-primary btn-lg" href="#/invoices/new">${ic('plus')}Create invoice</a>
+        <a class="btn btn-secondary btn-lg" href="#/receipts/new">${ic('receipt')}Create receipt</a>
       </div>
-      <section class="card">
-        <div class="card-head"><h2>Recent invoices</h2><a class="btn btn-ghost btn-sm" href="#/invoices">View all</a></div>
-        ${loading ? `<div class="tbl">${skeletonRows(5)}</div>` : recentInv.length ? `<div class="tbl">
-          <div class="tbl-row tbl-head" style="--cols:${invCols}"><span>Invoice</span><span>Issued</span><span>Due</span><span class="r">Amount</span><span>Status</span><span></span></div>
-          <div class="tbl-body">${recentInv.map(d => invoiceRow(d, invCols, true)).join('')}</div></div>`
-          : emptyHTML('invoice', 'No invoices yet', 'Create your first invoice. It takes about a minute.', '<a class="btn btn-primary btn-sm" href="#/invoices/new">Create invoice</a>')}
+      ${attention.length ? `<section class="sec"><div class="sec-h"><h2>Needs your attention</h2></div>
+        <div class="rows">${attention.map(d => {
+          const days = daysBetween(d.dueDate, today), isLate = days > 0;
+          return `<a class="row" href="#/invoices/${d.id}"><span class="row-ic ${isLate ? 'late' : ''}">${ic(isLate ? 'alert' : 'calendar')}</span>
+            <span class="row-main"><span class="row-t">${esc(clientName(d))}</span><span class="row-s ${isLate ? 'late' : ''}">${isLate ? `${plural(days, 'day')} late` : days === 0 ? 'Due today' : `Due in ${plural(-days, 'day')}`}, ${esc(d.number)}</span></span>
+            <span class="row-end"><span class="row-amt">${esc(money(balances(d).balance, d.currency))}</span><span class="row-s">still owed</span></span></a>`; }).join('')}</div></section>` : ''}
+      <section class="sec">
+        <div class="sec-h"><div class="seg">${[['invoices', 'Recent invoices'], ['receipts', 'Recent receipts']].map(([k, l]) => `<button data-act="home-tab" data-k="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</div><a class="link" href="#/${tab}">See all</a></div>
+        ${loading ? skeletonList() : recent.length ? rowsHTML(recent)
+          : tab === 'invoices' ? emptyHTML('invoice', 'No invoices yet', 'Your first invoice takes about a minute: pick a client, add what you’re charging for, done.', '<a class="btn btn-primary" href="#/invoices/new">Create invoice</a>')
+          : emptyHTML('receipt', 'No receipts yet', 'When a client pays you, record it here and they get a receipt.', '<a class="btn btn-secondary" href="#/receipts/new">Create receipt</a>')}
       </section>
-    </div>
-    <a class="btn btn-primary fab" href="#/invoices/new">${ic('plus')}New invoice</a>`,
-    mount(el) { const c = $('#dash-chart', el); if (c) mountChart(c, series, cur); }
+      <a class="quiet-link" href="#/reports">${ic('chart')}See reports and trends</a>
+    </div>`
   };
 }
 
 /* =====================================================================
-   Invoices
+   Invoices list: search, three simple filters, the rest in a sheet
    ===================================================================== */
 const LS = {
-  invoices: { q: '', status: 'all', period: 'all', from: '', to: '', sort: 'issueDate', dir: 'desc', page: 1 },
-  receipts: { q: '', client: '', period: 'all', from: '', to: '', sort: 'issueDate', dir: 'desc', page: 1 },
-  clients: { q: '', sort: 'name', dir: 'asc', page: 1 }
+  invoices: { q: '', status: 'all', period: 'all', from: '', to: '', sort: 'issueDate', dir: 'desc', limit: 30 },
+  receipts: { q: '', client: '', period: 'all', from: '', to: '', sort: 'issueDate', dir: 'desc', limit: 30 },
+  clients: { q: '' }
 };
-const INV_FILTERS = [['all', 'All'], ['open', 'Open'], ['draft', 'Draft'], ['sent', 'Sent'], ['partial', 'Partially paid'], ['overdue', 'Overdue'], ['paid', 'Paid'], ['cancelled', 'Cancelled']];
+const QUICK = [['all', 'All'], ['open', 'Unpaid'], ['overdue', 'Late'], ['paid', 'Paid']];
+const ALL_STATUS = [['all', 'All invoices'], ['open', 'Unpaid (anything still owed)'], ['overdue', 'Late'], ['partial', 'Part paid'], ['paid', 'Paid'], ['draft', 'Drafts'], ['cancelled', 'Cancelled']];
+const PERIODS = [['all', 'Any date'], ['this-month', 'This month'], ['last-month', 'Last month'], ['last-90', 'Last 90 days'], ['this-year', 'This year'], ['custom', 'Choose dates']];
 function invMatches(d, f) {
   const s = invoiceStatus(d);
   if (f === 'all') return true;
   if (f === 'open') return countsAsIssued(d) && s !== 'paid';
-  if (f === 'sent') return s === 'sent' || s === 'issued';
   return s === f;
 }
 function filteredInvoices() {
-  const st = LS.invoices, q = st.q.trim().toLowerCase(), range = rangeOf(st);
+  const st = LS.invoices, q = st.q.trim().toLowerCase(), range = periodRange(st.period, st);
   const list = invoices().filter(d => invMatches(d, st.status) && (st.period === 'all' || inRange(d.issueDate, range))
     && (!q || [d.number, d.client && d.client.name, d.client && d.client.phone, ...(d.items || []).map(i => i.desc)].join(' ').toLowerCase().includes(q)));
-  return sortBy(list, st.sort, st.dir, (d, k) => k === 'amount' ? totals(d).totalCents : k === 'balance' ? balances(d).balanceCents : k === 'client' ? clientName(d).toLowerCase() : k === 'number' ? String(d.number) : d[k] || '');
+  return sortBy(list, st.sort, st.dir, (d, k) => k === 'amount' ? totals(d).totalCents : k === 'client' ? clientName(d).toLowerCase() : d[k] || '');
 }
-function invoiceRow(d, cols, compactRow) {
-  const t = totals(d), b = balances(d), st = invoiceStatus(d);
-  const due = st === 'overdue' ? `<span style="color:var(--red)">${esc(fmtShort(d.dueDate))}</span>` : esc(fmtShort(d.dueDate));
-  return `<div class="tbl-row" style="--cols:${cols}" data-href="#/invoices/${d.id}" tabindex="0" role="link">
-    ${compactRow ? '' : `<span class="cell-main num">${esc(d.number)}</span>`}
-    <div class="cell-2" data-m="a"><span class="cell-main">${esc(clientName(d))}</span><span class="cell-sub">${compactRow ? esc(d.number) : `<span class="m-only">${esc(d.number)}</span>`}</span></div>
-    <span class="t2">${esc(fmtShort(d.issueDate))}</span>
-    <span data-m="c"><span class="m-only">Due </span>${due}</span>
-    <span class="amount r" data-m="b">${esc(money(t.total, d.currency))}</span>
-    ${compactRow ? '' : `<span class="amount r ${b.balanceCents ? '' : 'muted'}">${esc(money(b.balance, d.currency))}</span>`}
-    <span data-m="d">${badge(d)}</span>
-    <button class="icon-btn sm row-menu" data-act="doc-menu" data-id="${d.id}" aria-label="Actions for ${esc(d.number)}" aria-haspopup="menu">${ic('more')}</button>
-  </div>`;
+const extraFilters = st => (st.period !== 'all' ? 1 : 0) + (st.sort !== 'issueDate' || st.dir !== 'desc' ? 1 : 0) + (st.client ? 1 : 0) + (st.status && !QUICK.some(q => q[0] === st.status) ? 1 : 0);
+function listBodyHTML(kind) {
+  if (loadingData()) return skeletonList(8);
+  const st = LS[kind];
+  const all = kind === 'invoices' ? invoices() : receipts();
+  if (!all.length) return kind === 'invoices'
+    ? emptyHTML('invoice', 'No invoices yet', 'Create one and it will appear here with its payment status.', '<a class="btn btn-primary" href="#/invoices/new">Create invoice</a>')
+    : emptyHTML('receipt', 'No receipts yet', 'Record a payment to create a receipt.', '<a class="btn btn-primary" href="#/receipts/new">Create receipt</a>');
+  const list = kind === 'invoices' ? filteredInvoices() : filteredReceipts();
+  if (!list.length) return emptyHTML('search', 'Nothing matches', 'Try another name or number, or clear the filters.', `<button class="btn btn-secondary" data-act="clear-filters" data-list="${kind}">Clear filters</button>`);
+  const shown = list.slice(0, st.limit);
+  let total = '';
+  if (kind === 'receipts') { const c = list.filter(r => !isVoid(r) && r.currency === S().currency).reduce((a, r) => a + receiptCents(r), 0); total = `, ${money(fromCents(c), S().currency)} received`; }
+  return `<div class="list-meta">${plural(list.length, kind === 'invoices' ? 'invoice' : 'receipt')}${esc(total)}</div>${rowsHTML(shown)}
+    ${list.length > shown.length ? `<button class="btn btn-secondary btn-block" style="margin-top:12px" data-act="more-rows" data-list="${kind}">Show more</button>` : ''}`;
 }
-const INV_COLS = '110px minmax(0,1.5fr) 92px 92px 124px 124px 128px 34px';
-function invoiceTableHTML() {
-  const list = filteredInvoices();
-  if (loadingData()) return `<div class="tbl">${skeletonRows(8)}</div>`;
-  if (!invoices().length) return emptyHTML('invoice', 'No invoices yet', 'Invoices you create appear here with their payment status.', '<a class="btn btn-primary" href="#/invoices/new">Create invoice</a>');
-  const page = pageSlice('invoices', list);
-  return `<div class="tbl" role="table">
-    <div class="tbl-row tbl-head" role="row" style="--cols:${INV_COLS}">${sortBtn('invoices', 'number', 'Number')}${sortBtn('invoices', 'client', 'Client')}${sortBtn('invoices', 'issueDate', 'Issued')}${sortBtn('invoices', 'dueDate', 'Due')}<span class="r">${sortBtn('invoices', 'amount', 'Amount')}</span><span class="r">${sortBtn('invoices', 'balance', 'Balance')}</span><span>Status</span><span></span></div>
-    <div class="tbl-body">${page.length ? page.map(d => invoiceRow(d, INV_COLS)).join('') : emptyHTML('search', 'No invoices match', 'Try a different search, status or date range.', '<button class="btn btn-secondary btn-sm" data-act="clear-filters" data-list="invoices">Clear filters</button>')}</div>
-  </div>${pagerHTML('invoices', list.length)}`;
-}
-function invoiceChips() {
-  return INV_FILTERS.map(([k, l]) => { const n = k === 'all' ? 0 : invoices().filter(d => invMatches(d, k)).length;
-    return `<button class="chip${LS.invoices.status === k ? ' on' : ''}" data-act="inv-status" data-k="${k}">${l}${n ? `<span class="n">${n}</span>` : ''}</button>`; }).join('');
+function listToolbar(kind) {
+  const st = LS[kind], n = extraFilters(st);
+  return `<div class="list-tools">
+    <div class="input-affix grow">${ic('search')}<input class="input" id="list-q" data-list="${kind}" type="search" placeholder="${kind === 'invoices' ? 'Search name or invoice number' : 'Search name, number or reference'}" value="${esc(st.q)}" autocomplete="off"></div>
+    <button class="btn btn-secondary filter-btn" data-act="filters" data-list="${kind}">${ic('filter')}<span class="hide-xs">Filters</span>${n ? `<span class="fcount">${n}</span>` : ''}</button>
+  </div>
+  ${kind === 'invoices' ? `<div class="quick" role="tablist">${QUICK.map(([k, l]) => `<button class="chip${st.status === k ? ' on' : ''}" data-act="inv-status" data-k="${k}">${l}</button>`).join('')}</div>` : ''}`;
 }
 function viewInvoices() {
-  const st = LS.invoices;
   return {
-    title: 'Invoices',
     topbar: { crumbs: [['Invoices']], actions: `<a class="btn btn-primary btn-sm hide-sm" href="#/invoices/new">${ic('plus')}New invoice</a>` },
-    html: `<div class="content">
-      ${pageHead('Invoices', 'Every invoice, its balance and where it stands.', `<button class="btn btn-secondary" data-act="export-csv" data-k="invoices">${ic('download')}Export</button><a class="btn btn-primary" href="#/invoices/new">${ic('plus')}New invoice</a>`)}
-      <section class="card">
-        <div class="toolbar">
-          <div class="input-affix grow">${ic('search')}<input class="input" id="list-q" data-list="invoices" type="search" placeholder="Search number, client or item" value="${esc(st.q)}" autocomplete="off"></div>
-          ${periodSelect('invoices', st)}
-        </div>
-        <div class="toolbar" style="padding-top:8px;padding-bottom:8px"><div class="filter-chips" id="inv-chips">${invoiceChips()}</div></div>
-        <div id="list-body">${invoiceTableHTML()}</div>
-      </section>
+    html: `<div class="content narrow-content">
+      ${pageHead('Invoices', '', `<a class="btn btn-primary" href="#/invoices/new">${ic('plus')}New invoice</a>`)}
+      ${listToolbar('invoices')}
+      <div id="list-body">${listBodyHTML('invoices')}</div>
     </div><a class="btn btn-primary fab" href="#/invoices/new">${ic('plus')}New invoice</a>`,
-    mount: bindListControls
+    mount: bindListSearch
   };
 }
-function refreshList() {
-  const n = current.name, body = $('#list-body'); if (!body) return;
-  body.innerHTML = n === 'invoices' ? invoiceTableHTML() : n === 'receipts' ? receiptTableHTML() : clientTableHTML();
-  const chips = $('#inv-chips'); if (chips) chips.innerHTML = invoiceChips();
-}
-function bindListControls(el) {
+function bindListSearch(el) {
   const q = $('#list-q', el);
-  if (q) q.addEventListener('input', debounce(() => { LS[q.dataset.list].q = q.value; LS[q.dataset.list].page = 1; refreshList(); }, 120));
-  el.addEventListener('change', e => {
-    const t = e.target; if (!t.dataset.lf) return;
-    const st = LS[t.dataset.list]; st[t.dataset.lf] = t.value; st.page = 1;
-    if (t.dataset.lf === 'period') renderRoute(true); else refreshList();
+  if (q) q.addEventListener('input', debounce(() => { const st = LS[q.dataset.list]; st.q = q.value; st.limit = 30; $('#list-body').innerHTML = q.dataset.list === 'clients' ? clientListHTML() : listBodyHTML(q.dataset.list); }, 120));
+}
+function openFilters(kind) {
+  const st = LS[kind];
+  const sorts = kind === 'invoices' ? [['issueDate:desc', 'Newest first'], ['issueDate:asc', 'Oldest first'], ['dueDate:asc', 'Due date, soonest first'], ['amount:desc', 'Largest amount'], ['client:asc', 'Client name, A to Z']]
+    : [['issueDate:desc', 'Newest first'], ['issueDate:asc', 'Oldest first'], ['amount:desc', 'Largest amount'], ['client:asc', 'Client name, A to Z']];
+  const opt = (arr, v) => arr.map(([k, l]) => `<option value="${k}"${k === v ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const dlg = openDialog({
+    title: 'Filters', width: 440,
+    body: `<div class="form-stack">
+      ${kind === 'invoices' ? `<div class="field"><label for="ff-s">Show</label><select class="input" id="ff-s">${opt(ALL_STATUS, st.status)}</select></div>`
+        : `<div class="field"><label for="ff-c">Client</label><select class="input" id="ff-c"><option value="">All clients</option>${[...DB.clients].sort((a, b) => a.name.localeCompare(b.name)).map(c => `<option value="${c.id}"${st.client === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>`}
+      <div class="field"><label for="ff-p">Date</label><select class="input" id="ff-p">${opt(PERIODS, st.period)}</select></div>
+      <div class="grid-2" id="ff-range" ${st.period === 'custom' ? '' : 'hidden'}><div class="field"><label for="ff-f">From</label><input class="input" type="date" id="ff-f" value="${esc(st.from)}"></div><div class="field"><label for="ff-t">To</label><input class="input" type="date" id="ff-t" value="${esc(st.to)}"></div></div>
+      <div class="field"><label for="ff-o">Order</label><select class="input" id="ff-o">${opt(sorts, `${st.sort}:${st.dir}`)}</select></div>
+    </div>`,
+    foot: `<button class="btn btn-ghost" data-ff="reset">Reset</button><button class="btn btn-primary" data-ff="apply">Show results</button>`,
+    onMount(b) {
+      $('#ff-p', b).addEventListener('change', e => { $('#ff-range', b).hidden = e.target.value !== 'custom'; });
+      b.addEventListener('click', e => {
+        const t = e.target.closest('[data-ff]'); if (!t) return;
+        if (t.dataset.ff === 'reset') Object.assign(st, { status: 'all', client: '', period: 'all', from: '', to: '', sort: 'issueDate', dir: 'desc' });
+        else {
+          if ($('#ff-s', b)) st.status = $('#ff-s', b).value;
+          if ($('#ff-c', b)) st.client = $('#ff-c', b).value;
+          st.period = $('#ff-p', b).value; st.from = $('#ff-f', b).value; st.to = $('#ff-t', b).value;
+          [st.sort, st.dir] = $('#ff-o', b).value.split(':');
+        }
+        st.limit = 30; dlg.close(); renderRoute(true);
+      });
+    }
   });
 }
 
-/* ---------- invoice detail ---------- */
+/* ---------- invoice detail: summary first, document one tap away on phones ---------- */
 function viewInvoice(id) {
   const d = findDoc(id);
   if (!d || d.type !== 'invoice') return notFound('Invoice', '#/invoices');
   const b = balances(d), st = invoiceStatus(d), pays = receipts().filter(r => r.linkedInvoiceId === d.id).sort((a, c) => (a.issueDate || '').localeCompare(c.issueDate || ''));
   const pct = b.totalCents ? Math.min(100, Math.round(b.paidCents / b.totalCents * 100)) : 0;
   const canPay = countsAsIssued(d) && b.balanceCents > 0;
-  const overdueDays = st === 'overdue' ? daysBetween(d.dueDate, todayISO()) : 0;
+  const lateDays = st === 'overdue' ? daysBetween(d.dueDate, todayISO()) : 0;
   const termsLabel = (TERMS.find(t => t[0] === String(d.terms)) || [])[1];
   return {
-    title: d.number,
-    topbar: { crumbs: [['Invoices', '#/invoices'], [d.number]], actions: `<button class="btn btn-secondary btn-sm hide-sm" data-act="dl" data-id="${d.id}">${ic('download')}PDF</button>` },
+    topbar: { crumbs: [['Invoices', '#/invoices'], [d.number]], back: '#/invoices', actions: `<button class="icon-btn" data-act="doc-menu" data-id="${d.id}" data-detail="1" aria-label="More actions">${ic('more')}</button>` },
     html: `<div class="detail">
-      <div class="workspace ws-scroll">
-        <div class="ws-bar"><span>${esc(STATUS[st])} invoice</span><span id="pg-count"></span></div>
-        <div id="preview" data-pad="0" data-max="1" style="max-width:820px;margin:0 auto"></div>
-      </div>
+      <div class="workspace ws-scroll hide-sm-block"><div class="ws-bar"><span>${esc(STATUS[st])} invoice</span><span id="pg-count"></span></div><div id="preview" style="max-width:820px;margin:0 auto"></div></div>
       <aside class="side" aria-label="Invoice summary">
-        <div class="side-sec">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px"><a class="cell-main ellipsis" href="${d.clientId ? '#/clients/' + d.clientId : '#/clients'}" style="font-size:15px">${esc(clientName(d))}</a>${badge(d)}</div>
+        <div class="side-sec summary">
+          <div class="sum-top"><a class="sum-client" href="${d.clientId ? '#/clients/' + d.clientId : '#/clients'}">${esc(clientName(d))}</a>${badge(d)}</div>
           <div class="big-amt num"><span class="cur">${esc(d.currency)}</span>${esc(plainAmount(b.total))}</div>
           ${countsAsIssued(d) ? `<div class="progress" aria-label="${pct}% paid"><i style="width:${pct}%"></i></div>
-          <div class="kv" style="padding:0"><span>${esc(money(b.paid, d.currency))} paid</span><b>${b.balanceCents ? esc(money(b.balance, d.currency)) + ' due' : 'Fully paid'}</b></div>` : ''}
+            <div class="sum-line"><span>${b.paidCents ? `${esc(money(b.paid, d.currency))} paid` : 'Nothing paid yet'}</span><b ${lateDays ? 'style="color:var(--red)"' : ''}>${b.balanceCents ? `${esc(money(b.balance, d.currency))} still owed` : 'Fully paid'}</b></div>
+            <div class="sum-due ${lateDays ? 'late' : ''}">${st === 'paid' ? `Paid in full` : lateDays ? `${plural(lateDays, 'day')} late, was due ${esc(fmtDate(d.dueDate))}` : `Due ${esc(fmtDate(d.dueDate))}`}</div>`
+          : d.status === 'draft' ? '<div class="sum-due">Draft. Not counted until you finish it.</div>' : '<div class="sum-due">Cancelled. Not counted as money owed.</div>'}
         </div>
-        <div class="side-sec" style="display:grid;gap:10px">
-          ${d.status === 'draft' && !d.cancelledAt ? `<button class="btn btn-primary btn-block" data-act="finalize" data-id="${d.id}">${ic('check')}Finalize invoice</button>` : ''}
-          ${canPay ? `<a class="btn btn-primary btn-block" href="#/receipts/new?invoice=${d.id}">${ic('wallet')}Record payment</a>` : ''}
-          <div class="actions-grid">
-            <a class="act" href="#/invoices/${d.id}/edit">${ic('edit')}Edit</a>
+        <div class="side-sec actions-sec">
+          ${d.status === 'draft' && !d.cancelledAt ? `<button class="btn btn-primary btn-lg btn-block" data-act="finalize" data-id="${d.id}">${ic('check')}Finish invoice</button>` : ''}
+          ${canPay ? `<a class="btn btn-primary btn-lg btn-block" href="#/receipts/new?invoice=${d.id}">${ic('wallet')}Record a payment</a>` : ''}
+          <div class="act-row">
+            <button class="act" data-act="share" data-id="${d.id}">${ic('share')}Send</button>
             <button class="act" data-act="dl" data-id="${d.id}">${ic('download')}PDF</button>
-            <button class="act" data-act="print" data-id="${d.id}">${ic('print')}Print</button>
-            <button class="act" data-act="share" data-id="${d.id}">${ic('share')}Share</button>
+            <button class="act show-sm-flex" data-act="view-doc" data-id="${d.id}">${ic('eye')}View</button>
+            <button class="act hide-sm-flex" data-act="print" data-id="${d.id}">${ic('print')}Print</button>
+            <a class="act" href="#/invoices/${d.id}/edit">${ic('edit')}Edit</a>
           </div>
-          <button class="btn btn-ghost btn-sm" data-act="doc-menu" data-id="${d.id}" data-detail="1" style="justify-self:center">${ic('more')}More actions</button>
         </div>
-        <div class="side-sec"><h3>Details</h3>
+        <div class="side-sec">
+          <div class="sec-h" style="margin:0 0 8px"><h3>Payments</h3>${canPay ? `<a class="link" href="#/receipts/new?invoice=${d.id}">Add</a>` : ''}</div>
+          ${pays.length ? `<div class="timeline">${pays.map(r => `<a class="tl-item${isVoid(r) ? ' void' : ''}" href="#/receipts/${r.id}"><span class="tl-dot"></span><div><b>${esc(money(receiptAmount(r), r.currency))}</b><small>${esc(fmtDate(r.issueDate))}, ${esc(r.paymentMethod || '')}${isVoid(r) ? ', void' : ''}</small></div><span class="muted">${esc(r.number)}</span></a>`).join('')}</div>`
+            : `<p class="muted small">${d.status === 'paid' ? 'Marked as paid in the earlier version, without a receipt.' : 'No payments yet.'}</p>`}
+        </div>
+        <details class="side-sec disclosure">
+          <summary>Invoice details</summary>
           <div class="kv"><span>Number</span><b>${esc(d.number)}</b></div>
           <div class="kv"><span>Issued</span><b>${esc(fmtDate(d.issueDate))}</b></div>
-          <div class="kv"><span>Due</span><b ${overdueDays ? 'style="color:var(--red)"' : ''}>${esc(fmtDate(d.dueDate))}${overdueDays ? `, ${plural(overdueDays, 'day')} late` : ''}</b></div>
-          ${termsLabel && d.terms !== 'custom' ? `<div class="kv"><span>Terms</span><b>${esc(termsLabel)}</b></div>` : ''}
+          <div class="kv"><span>Due</span><b>${esc(fmtDate(d.dueDate))}</b></div>
+          ${termsLabel && d.terms !== 'custom' ? `<div class="kv"><span>Payment terms</span><b>${esc(termsLabel)}</b></div>` : ''}
           <div class="kv"><span>Currency</span><b>${esc(d.currency)}</b></div>
           ${d.sentAt ? `<div class="kv"><span>Sent</span><b>${esc(fmtDate(d.sentAt.slice(0, 10)))}</b></div>` : ''}
           ${d.cancelledAt ? `<div class="kv"><span>Cancelled</span><b>${esc(fmtDate(d.cancelledAt.slice(0, 10)))}</b></div>` : ''}
-        </div>
-        <div class="side-sec"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h3 style="margin:0">Payments</h3>${canPay ? `<a class="btn btn-ghost btn-sm" href="#/receipts/new?invoice=${d.id}">${ic('plus')}Add</a>` : ''}</div>
-          ${pays.length ? `<div class="timeline">${pays.map(r => `<div class="tl-item${isVoid(r) ? ' void' : ''}" data-href="#/receipts/${r.id}" tabindex="0" role="link"><span class="tl-dot"></span><div><b>${esc(r.number)}</b><small>${esc(fmtDate(r.issueDate))}, ${esc(r.paymentMethod || '')}${isVoid(r) ? ', void' : ''}</small></div><span class="amount" ${isVoid(r) ? 'style="text-decoration:line-through;color:var(--text-3)"' : ''}>${esc(money(receiptAmount(r), r.currency))}</span></div>`).join('')}</div>`
-            : d.status === 'paid' && !pays.length ? '<p class="muted" style="margin:0;font-size:13px">Marked as paid in the earlier version, without a receipt.</p>' : '<p class="muted" style="margin:0;font-size:13px">No payments recorded yet.</p>'}
-        </div>
+        </details>
       </aside>
     </div>`,
-    mount(el) { const n = renderPreview($('#preview', el), d); $('#pg-count', el).textContent = plural(n, 'page'); }
+    mount(el) { const p = $('#preview', el); if (p && isWide()) { const n = renderPreview(p, d); $('#pg-count', el).textContent = plural(n, 'page'); } else if (p && !isPhone()) { const n = renderPreview(p, d); $('#pg-count', el).textContent = plural(n, 'page'); } }
   };
 }
-function notFound(kind, back) {
-  return { title: 'Not found', topbar: { crumbs: [[kind]] }, html: `<div class="content">${emptyHTML('alert', `${kind} not found`, 'It may have been deleted on another device.', `<a class="btn btn-secondary" href="${back}">Go back</a>`)}</div>` };
+/* Full-screen document view, used on phones and from the editors */
+function openDocView(d, { title, footer } = {}) {
+  const dlg = openDialog({
+    title: esc(title || `${d.type === 'receipt' ? 'Receipt' : 'Invoice'} ${d.number || ''}`), full: true, width: 900, cls: 'doc-view',
+    body: `<div class="workspace doc-ws"><div id="dv-preview"></div></div>`,
+    foot: footer === undefined ? `<button class="btn btn-secondary" data-act="dl" data-id="${d.id}">${ic('download')}PDF</button><button class="btn btn-primary" data-act="share" data-id="${d.id}">${ic('share')}Send</button>` : footer,
+    onMount(b) { requestAnimationFrame(() => renderPreview($('#dv-preview', b), d)); }
+  });
+  return dlg;
 }
 
-/* ---------- document actions ---------- */
+/* =====================================================================
+   Document actions
+   ===================================================================== */
 async function withBusy(btn, label, fn) {
   const old = btn ? btn.innerHTML : '';
   if (btn) { btn.classList.add('loading'); if (label) btn.innerHTML = esc(label); }
@@ -622,403 +628,285 @@ function restoreReceipt(r) {
   putDoc({ ...r, voidedAt: null, voidReason: '' }); toast(`${r.number} restored`); refreshView();
 }
 
+
 /* =====================================================================
-   Client picker (shared by both editors)
+   Client picker: a focused sheet, never a wall of fields
    ===================================================================== */
-function attachCombo(input, { source, onPick }) {
-  const wrap = input.closest('.combo'); let list = null, opts = [], hl = 0;
-  const close = () => { if (list) { list.remove(); list = null; input.setAttribute('aria-expanded', 'false'); } };
-  const render = () => {
-    opts = source(input.value.trim());
-    if (!opts.length) { close(); return; }
-    if (!list) { list = document.createElement('div'); list.className = 'combo-list'; list.setAttribute('role', 'listbox'); wrap.appendChild(list); input.setAttribute('aria-expanded', 'true'); }
-    list.innerHTML = opts.map((o, i) => `<button type="button" class="combo-opt${i === hl ? ' hl' : ''}" data-i="${i}" role="option">${o.icon ? ic(o.icon) : ''}<span class="ellipsis">${esc(o.label)}</span>${o.sub ? `<small>${esc(o.sub)}</small>` : ''}</button>`).join('');
-  };
-  const pick = o => { close(); onPick(o); };
-  input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
-  input.addEventListener('focus', () => { hl = 0; render(); });
-  input.addEventListener('input', () => { hl = 0; render(); });
-  input.addEventListener('blur', () => setTimeout(close, 160));
-  input.addEventListener('keydown', e => {
-    if (!list) { if (e.key === 'ArrowDown') render(); return; }
-    if (e.key === 'ArrowDown') { e.preventDefault(); hl = Math.min(opts.length - 1, hl + 1); render(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); hl = Math.max(0, hl - 1); render(); }
-    else if (e.key === 'Enter') { e.preventDefault(); pick(opts[hl]); }
-    else if (e.key === 'Escape') close();
+const blankClient = () => ({ name: '', email: '', phone: '', address: '' });
+const snap = c => ({ name: c.name, email: c.email || '', phone: c.phone || '', address: c.address || '' });
+function clientRowHTML(d, label = 'Select a client', hint = 'Choose someone you’ve billed before, or add someone new') {
+  const c = d.client || {};
+  if (!c.name) return `<button class="pick-row empty" data-act="pick-client" type="button"><span class="pr-main"><b>${label}</b><small>${hint}</small></span>${ic('chevRight')}</button>`;
+  return `<button class="pick-row" data-act="pick-client" type="button"><span class="avatar">${esc(initials(c.name))}</span><span class="pr-main"><b>${esc(c.name)}</b><small>${esc([c.phone, c.email].filter(Boolean).join('  ') || 'No contact details')}</small></span><span class="pr-change">Change</span></button>`;
+}
+function pickClient(onPick) {
+  let mode = 'list', q = '';
+  const dlg = openDialog({
+    title: 'Select a client', full: true, width: 520,
+    body: `<div id="pc"></div>`,
+    onMount(b) { render(b); }
   });
-  wrap.addEventListener('mousedown', e => { const b = e.target.closest('.combo-opt'); if (b) { e.preventDefault(); pick(opts[+b.dataset.i]); } });
-}
-function clientSource(q) {
-  const nq = q.toLowerCase();
-  const out = DB.clients.filter(c => !nq || [c.name, c.email, c.phone].join(' ').toLowerCase().includes(nq)).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 7)
-    .map(c => ({ icon: 'user', label: c.name, sub: c.phone || c.email || '', client: c }));
-  if (q) out.push({ icon: 'plus', label: `Add “${q}” as a new client`, newName: q });
-  else out.push({ icon: 'plus', label: 'Add a new client', newName: '' });
-  return out;
-}
-function clientSectionHTML(d, locked) {
-  const c = d.client;
-  if (locked) return `<div class="client-card"><span class="avatar">${esc(initials(c.name))}</span><div class="who"><b>${esc(c.name || 'No client')}</b><small>${esc([c.phone, c.email].filter(Boolean).join('  ') || 'No contact details')}</small></div></div>`;
-  if (d._cmode === 'new' || d._cmode === 'edit') {
-    return `<div class="ed-fields">
-      <div class="field"><label for="cf-name">${d._cmode === 'new' ? 'New client name' : 'Client name'}</label><input class="input" id="cf-name" data-f="client.name" value="${esc(c.name)}" placeholder="Full name or business"></div>
-      <div class="grid-2"><div class="field"><label for="cf-phone">Phone</label><input class="input" id="cf-phone" data-f="client.phone" inputmode="tel" value="${esc(c.phone)}" placeholder="Optional"></div>
-      <div class="field"><label for="cf-email">Email</label><input class="input" id="cf-email" type="email" data-f="client.email" value="${esc(c.email)}" placeholder="Optional"></div></div>
-      <div class="field"><label for="cf-addr">Billing address</label><textarea class="input" id="cf-addr" rows="2" data-f="client.address" placeholder="Optional">${esc(c.address)}</textarea></div>
-      ${d._cmode === 'edit' ? `<label class="checkbox"><input type="checkbox" data-f="_updateClient"${d._updateClient !== false ? ' checked' : ''}>Also update the saved client</label>` : ''}
-      <div><button class="btn btn-ghost btn-sm" data-act="client-pick" type="button">${d._cmode === 'new' ? 'Choose an existing client instead' : 'Done'}</button></div>
-    </div>`;
-  }
-  if (d.clientId || c.name) {
-    return `<div class="client-card"><span class="avatar">${esc(initials(c.name))}</span><div class="who"><b>${esc(c.name)}</b><small>${esc([c.phone, c.email].filter(Boolean).join('  ') || 'No contact details')}${c.address ? '\n' + esc(c.address) : ''}</small></div>
-      <div style="display:flex;gap:4px"><button class="btn btn-ghost btn-sm" type="button" data-act="client-edit-inline">Edit</button><button class="btn btn-secondary btn-sm" type="button" data-act="client-change">Change</button></div></div>`;
-  }
-  return `<div class="field"><div class="combo"><div class="input-affix">${ic('search')}<input class="input" id="client-combo" placeholder="Search clients or add a new one" autocomplete="off" aria-label="Client"></div></div><div class="err"></div></div>`;
-}
-function bindClientSection(sec, d, rerender) {
-  const input = $('#client-combo', sec);
-  if (input) attachCombo(input, {
-    source: clientSource,
-    onPick(o) {
-      if (o.client) { d.clientId = o.client.id; d.client = { name: o.client.name, email: o.client.email || '', phone: o.client.phone || '', address: o.client.address || '' }; d._cmode = 'card'; }
-      else { d.clientId = null; d.client = { name: o.newName, email: '', phone: '', address: '' }; d._cmode = 'new'; }
-      dirty = true; rerender(); const f = $('#cf-phone', sec) && !o.newName ? $('#cf-name', sec) : $('#cf-phone', sec); if (f) f.focus();
+  function render(b = dlg.body) {
+    const box = $('#pc', b); if (!box) return;
+    if (mode === 'list') {
+      const nq = q.toLowerCase();
+      const list = DB.clients.filter(c => !nq || [c.name, c.phone, c.email].join(' ').toLowerCase().includes(nq)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 40);
+      box.innerHTML = `<div class="input-affix">${ic('search')}<input class="input" id="pc-q" type="search" placeholder="Search by name or phone" value="${esc(q)}" autocomplete="off"></div>
+        <button class="pick-row add" data-pc="new" type="button"><span class="pr-plus">${ic('plus')}</span><span class="pr-main"><b>${q ? `Add “${esc(q)}” as a new client` : 'Add a new client'}</b></span></button>
+        ${list.length ? `<div class="pick-label">${q ? 'Matches' : 'Your clients'}</div><div class="pick-list">${list.map(c => `<button class="pick-row" data-pc="${c.id}" type="button"><span class="avatar">${esc(initials(c.name))}</span><span class="pr-main"><b>${esc(c.name)}</b><small>${esc(c.phone || c.email || 'No contact details')}</small></span></button>`).join('')}</div>`
+          : q ? '' : '<p class="muted small" style="margin:16px 4px">No clients yet. Add your first one above.</p>'}`;
+      const i = $('#pc-q', box);
+      i.addEventListener('input', () => { q = i.value; const pos = i.selectionStart; render(); const n = $('#pc-q'); n.focus(); n.setSelectionRange(pos, pos); });
+      if (!isPhone()) setTimeout(() => i.focus(), 60);
+    } else {
+      box.innerHTML = `<div class="form-stack">
+        <div class="field"><label for="nc-name">Name</label><input class="input" id="nc-name" value="${esc(q)}" placeholder="Person or business name" autocomplete="off"><div class="err"></div></div>
+        <div class="field"><label for="nc-phone">Phone number</label><input class="input" id="nc-phone" inputmode="tel" placeholder="Optional"></div>
+        <details class="disclosure inline"><summary>Add email and address</summary><div class="form-stack" style="margin-top:12px">
+          <div class="field"><label for="nc-email">Email</label><input class="input" id="nc-email" type="email" placeholder="Optional"></div>
+          <div class="field"><label for="nc-addr">Address</label><textarea class="input" id="nc-addr" rows="2" placeholder="Optional"></textarea></div></div></details>
+        <div class="sheet-actions"><button class="btn btn-secondary" data-pc="back" type="button">Back</button><button class="btn btn-primary" data-pc="save" type="button">Add client</button></div></div>`;
+      setTimeout(() => $('#nc-name', box).focus(), 60);
     }
+  }
+  dlg.body.addEventListener('click', async e => {
+    const t = e.target.closest('[data-pc]'); if (!t) return;
+    const k = t.dataset.pc;
+    if (k === 'new') { mode = 'new'; render(); return; }
+    if (k === 'back') { mode = 'list'; render(); return; }
+    if (k === 'save') {
+      const rec = { id: uid(), createdAt: Date.now(), notes: '', name: $('#nc-name').value.trim(), phone: $('#nc-phone').value.trim(), email: $('#nc-email').value.trim(), address: $('#nc-addr').value.trim() };
+      if (!rec.name) { setFieldError($('#nc-name'), 'Add a name'); $('#nc-name').focus(); return; }
+      const dup = findDuplicateClient(rec);
+      if (dup && await confirmDialog({ title: `${dup.name} is already a client`, message: 'Use the existing client instead of adding a duplicate?', ok: `Use ${dup.name}`, cancel: 'Add new anyway' })) { dlg.close(); onPick(dup); return; }
+      putClient(rec); dlg.close(); onPick(rec); return;
+    }
+    const c = findClient(k); if (c) { dlg.close(); onPick(c); }
   });
 }
 
 /* =====================================================================
-   Invoice editor
+   Invoice editor. Three things: client, items, total. Everything else
+   comes from Settings and lives behind "Customize invoice".
    ===================================================================== */
 let draft = null;
 function viewInvoiceEditor(id) {
-  let isNew = !id;
+  const isNew = !id;
   if (id) {
     const d = findDoc(id);
     if (!d || d.type !== 'invoice') return notFound('Invoice', '#/invoices');
     draft = JSON.parse(JSON.stringify(d));
-    if (!draft.items || !draft.items.length) draft.items = [{ id: uid(), desc: '', qty: 1, price: '' }];
+    draft.items = (draft.items || []).filter(i => String(i.desc || '').trim() || num(i.price));
     draft.items.forEach(i => { if (!i.id) i.id = uid(); });
     if (draft.terms === undefined) draft.terms = 'custom';
     if (draft.discountType === undefined) draft.discountType = 'amt';
     if (draft.showPayment === undefined) draft.showPayment = true;
     if (draft.status === 'unpaid') draft.status = 'issued';
-    draft._cmode = draft.client && draft.client.name ? 'card' : 'pick';
   } else {
     const client = current.query.client && findClient(current.query.client);
     draft = pendingDraft || newInvoice(client);
     pendingDraft = null;
-    draft._cmode = draft.client && draft.client.name ? 'card' : 'pick';
+    draft.items = draft.items.filter(i => String(i.desc || '').trim() || num(i.price));
+    draft._planned = draft.number;
   }
   draft._isNew = isNew;
-  const paidC = isNew ? 0 : balances(findDoc(id)).paidCents;
+  const isDraft = isNew || draft.status === 'draft';
   const title = isNew ? 'New invoice' : `Edit ${draft.number}`;
-  const tpl = draft.template || S().template || 'classic';
   return {
-    title,
     topbar: {
-      crumbs: [['Invoices', '#/invoices'], [title]],
-      actions: `${isNew || draft.status === 'draft' ? `<button class="btn btn-secondary btn-sm hide-sm" data-act="inv-save" data-mode="draft">Save draft</button>` : ''}
-        <button class="btn btn-primary btn-sm hide-sm" data-act="inv-save" data-mode="final">${ic('check')}${isNew || draft.status === 'draft' ? 'Save invoice' : 'Save changes'}</button>
-        <button class="icon-btn hide-sm" data-act="ed-more" aria-label="More">${ic('more')}</button>`
+      crumbs: [['Invoices', '#/invoices'], [title]], back: isNew ? '#/invoices' : `#/invoices/${draft.id}`, search: false,
+      badge: isDraft ? '<span class="badge draft tb-badge">Draft</span>' : '',
+      actions: `${isDraft ? `<button class="btn btn-ghost btn-sm hide-sm" data-act="inv-save" data-mode="draft">Save as draft</button>` : ''}
+        <button class="btn btn-primary btn-sm hide-sm" data-act="inv-save" data-mode="final">${isDraft ? 'Create invoice' : 'Save changes'}</button>`
     },
-    html: `<div class="editor" data-tab="edit" id="editor">
-      <div class="ed-tabs"><div class="seg"><button class="on" data-act="ed-tab" data-k="edit">${ic('edit')}Edit</button><button data-act="ed-tab" data-k="preview">${ic('eye')}Preview</button></div></div>
-      <div class="ed-panel"><div class="ed-panel-inner" id="ed-form">
-        <section class="ed-sec" id="sec-client"><div class="ed-sec-h"><h3><span class="stepn">1</span>Bill to</h3></div><div id="client-slot">${clientSectionHTML(draft)}</div></section>
-        <section class="ed-sec"><div class="ed-sec-h"><h3><span class="stepn">2</span>Invoice details</h3></div>
-          <div class="ed-fields">
-            <div class="grid-2">
-              <div class="field"><label for="f-num">Invoice number</label><input class="input num" id="f-num" data-f="number" value="${esc(draft.number)}"><div class="err"></div></div>
-              <div class="field"><label for="f-cur">Currency</label><select class="input" id="f-cur" data-f="currency" ${paidC ? 'disabled' : ''}>${CURRENCIES.map(([c, n]) => `<option value="${c}"${c === draft.currency ? ' selected' : ''}>${c} · ${n}</option>`).join('')}</select></div>
-            </div>
-            <div class="grid-3">
-              <div class="field"><label for="f-issue">Issue date</label><input class="input" type="date" id="f-issue" data-f="issueDate" value="${esc(draft.issueDate)}"></div>
-              <div class="field"><label for="f-terms">Payment terms</label><select class="input" id="f-terms" data-f="terms">${TERMS.map(([k, l]) => `<option value="${k}"${String(draft.terms) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
-              <div class="field"><label for="f-due">Due date</label><input class="input" type="date" id="f-due" data-f="dueDate" value="${esc(draft.dueDate)}"><div class="err"></div></div>
-            </div>
-          </div>
-        </section>
-        <section class="ed-sec"><div class="ed-sec-h"><h3><span class="stepn">3</span>Items and services</h3><span class="muted" id="item-count" style="font-size:12.5px"></span></div>
-          <div class="items" id="items"></div>
-        </section>
-        <section class="ed-sec"><div class="ed-sec-h"><h3><span class="stepn">4</span>Discount and tax</h3></div>
-          <div class="grid-2">
-            <div class="field"><label for="f-disc">Discount</label><div class="input-group"><input class="input num" id="f-disc" data-f="discount" inputmode="decimal" placeholder="0" value="${esc(draft.discount)}">
-              <div class="seg" id="disc-seg"><button type="button" data-act="disc-type" data-v="pct" class="${draft.discountType === 'pct' ? 'on' : ''}">%</button><button type="button" data-act="disc-type" data-v="amt" class="${draft.discountType !== 'pct' ? 'on' : ''}" id="disc-sym">${esc(symbolOf(draft.currency))}</button></div></div></div>
-            <div class="field"><label for="f-tax">${esc(S().taxLabel || 'Tax')} rate (%)</label><input class="input num" id="f-tax" data-f="taxRate" inputmode="decimal" placeholder="0" value="${esc(draft.taxRate)}"></div>
-          </div>
-        </section>
-        <section class="ed-sec"><div class="ed-sec-h"><h3><span class="stepn">5</span>Payment and notes</h3></div>
-          <div class="ed-fields">
-            <label class="checkbox"><input type="checkbox" data-f="showPayment"${draft.showPayment !== false ? ' checked' : ''}>Include payment details</label>
-            <p class="hint" style="margin:-4px 0 0 25px;font-size:12.5px;color:var(--text-3);white-space:pre-line">${S().payment ? esc(S().payment) : 'No payment details yet. <a href="#/settings/payments" style="text-decoration:underline">Add them in Settings</a>.'}</p>
-            <div class="field"><label for="f-notes">Notes</label><textarea class="input" id="f-notes" data-f="notes" rows="2" placeholder="Shown on the invoice">${esc(draft.notes || '')}</textarea></div>
-            <div class="field"><label for="f-tt">Terms and conditions</label><textarea class="input" id="f-tt" data-f="termsText" rows="2" placeholder="Optional">${esc(draft.termsText || '')}</textarea></div>
-            <div class="field"><label for="f-foot">Closing line</label><input class="input" id="f-foot" data-f="footer" value="${esc(draft.footer ?? S().footer)}"></div>
-          </div>
-        </section>
-        <section class="ed-sec"><div class="totals" id="ed-totals"></div></section>
+    html: `<div class="ed2" id="editor">
+      <div class="ed2-main"><div class="ed2-inner">
+        <section class="blk"><div class="blk-label">Client</div><div id="client-slot">${clientRowHTML(draft)}</div></section>
+        <section class="blk"><div class="blk-label">Items</div><div id="item-list"></div>
+          <button class="add-dashed" data-act="item-add" type="button">${ic('plus')}Add item</button></section>
+        <section class="blk sum" id="sum"></section>
+        <button class="btn btn-primary btn-lg btn-block main-cta" data-act="inv-save" data-mode="final">${isDraft ? 'Create invoice' : 'Save changes'}</button>
+        <p class="fine" id="auto-note"></p>
+        <div class="ed2-links">
+          <button class="link" data-act="ed-options" type="button">${ic('settings')}Customize invoice</button>
+          <button class="link lt-wide" data-act="ed-preview" type="button">${ic('eye')}Preview</button>
+          ${isDraft ? `<button class="link" data-act="inv-save" data-mode="draft" type="button">${ic('file')}Save as draft</button>` : ''}
+        </div>
       </div></div>
-      <div class="ed-preview workspace ws-scroll">
-        <div class="ws-bar"><div class="seg" aria-label="Template">${['classic', 'modern', 'minimal'].map(t => `<button data-act="tpl" data-k="${t}" class="${tpl === t ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div><span id="pg-count"></span></div>
-        <div id="preview" style="max-width:820px;margin:0 auto"></div>
-      </div>
-      <div class="ed-mobile-bar">
-        ${isNew || draft.status === 'draft' ? `<button class="btn btn-secondary" data-act="inv-save" data-mode="draft">Save draft</button>` : ''}
-        <button class="btn btn-primary" data-act="inv-save" data-mode="final">${isNew || draft.status === 'draft' ? 'Save invoice' : 'Save changes'}</button>
-      </div>
+      <div class="ed2-preview workspace"><div class="ws-bar"><span>Preview</span><span id="pg-count"></span></div><div id="preview" style="max-width:820px;margin:0 auto"></div></div>
     </div>`,
-    mount(el) {
-      const form = $('#ed-form', el);
-      renderItems(); refreshInvoice();
-      const sec = $('#sec-client', el);
-      const rerenderClient = () => { $('#client-slot', sec).innerHTML = clientSectionHTML(draft); bindClientSection(sec, draft, rerenderClient); refreshInvoice(); };
-      draft._rerenderClient = rerenderClient;
-      bindClientSection(sec, draft, rerenderClient);
-      form.addEventListener('input', onInvoiceInput);
-      form.addEventListener('change', onInvoiceInput);
-      if (isNew && !draft.client.name) setTimeout(() => { const c = $('#client-combo'); if (c && mq('(min-width:1100px)')) c.focus(); }, 60);
-    }
+    mount() { renderItemList(); refreshInvoice(); }
   };
 }
-function setPath(o, p, v) { const ks = p.split('.'); let x = o; for (let i = 0; i < ks.length - 1; i++) x = x[ks[i]]; x[ks[ks.length - 1]] = v; }
-function onInvoiceInput(e) {
-  const t = e.target; if (!draft) return;
-  if (t.dataset.f) {
-    const v = t.type === 'checkbox' ? t.checked : t.value;
-    setPath(draft, t.dataset.f, v);
-    if (t.dataset.f === 'terms' && v !== 'custom') { draft.dueDate = addDays(draft.issueDate || todayISO(), num(v)); $('#f-due').value = draft.dueDate; }
-    if (t.dataset.f === 'issueDate' && draft.terms !== 'custom' && v) { draft.dueDate = addDays(v, num(draft.terms)); $('#f-due').value = draft.dueDate; }
-    if (t.dataset.f === 'dueDate') { const match = TERMS.find(([k]) => k !== 'custom' && addDays(draft.issueDate, num(k)) === v); draft.terms = match ? match[0] : 'custom'; $('#f-terms').value = draft.terms; }
-    if (t.dataset.f === 'currency') { $('#disc-sym').textContent = symbolOf(draft.currency); renderItems(); }
-    if (t.dataset.f === 'number') setFieldError(t, numberTaken(t.value, draft.id) ? 'This number is already used.' : '');
-  } else if (t.dataset.item) {
-    const it = draft.items.find(i => i.id === t.dataset.item); if (it) it[t.dataset.k] = t.value;
-    const lt = $(`#lt-${t.dataset.item}`); if (lt && it) lt.textContent = money(fromCents(lineCents(it)), draft.currency);
-  } else return;
-  dirty = true; refreshInvoice();
-}
-function renderItems() {
-  const box = $('#items'); if (!box) return;
-  const cur = draft.currency;
-  box.innerHTML = `<div class="items-head"><span></span><span style="text-align:center">Qty</span><span>Unit price</span><span style="text-align:right">Amount</span><span></span></div>
-    ${draft.items.map(it => `<div class="item-row" data-row="${it.id}">
-      <span class="grip" title="Drag to reorder" aria-hidden="true">${ic('grip')}</span>
-      <input class="input i-desc" data-item="${it.id}" data-k="desc" placeholder="Item or service" value="${esc(it.desc)}" aria-label="Description">
-      <div class="i-nums"><span class="i-qty"><input class="input num" data-item="${it.id}" data-k="qty" inputmode="decimal" value="${esc(it.qty)}" aria-label="Quantity"></span>
-      <span class="i-price"><input class="input num" data-item="${it.id}" data-k="price" inputmode="decimal" placeholder="0.00" value="${esc(it.price)}" aria-label="Unit price"></span>
-      <span class="lt" id="lt-${it.id}">${esc(money(fromCents(lineCents(it)), cur))}</span></div>
-      <button class="icon-btn sm i-x" type="button" data-act="item-del" data-id="${it.id}" aria-label="Remove item">${ic('close')}</button>
-    </div>`).join('')}
-    <div class="items-actions"><button class="btn btn-secondary btn-sm" type="button" data-act="item-add">${ic('plus')}Add item</button>
-      <button class="btn btn-ghost btn-sm" type="button" data-act="item-catalog">${ic('box')}From products</button></div>`;
-  bindDrag(box);
-}
-function bindDrag(box) {
-  let dragId = null;
-  $$('.item-row', box).forEach(row => {
-    const grip = $('.grip', row);
-    grip.addEventListener('pointerdown', () => { row.draggable = true; });
-    row.addEventListener('dragstart', e => { dragId = row.dataset.row; row.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', dragId); } catch {} });
-    row.addEventListener('dragend', () => { row.draggable = false; row.classList.remove('dragging'); $$('.drop-before', box).forEach(r => r.classList.remove('drop-before')); });
-    row.addEventListener('dragover', e => { if (!dragId) return; e.preventDefault(); $$('.drop-before', box).forEach(r => r.classList.remove('drop-before')); row.classList.add('drop-before'); });
-    row.addEventListener('drop', e => {
-      e.preventDefault(); if (!dragId || dragId === row.dataset.row) return;
-      const from = draft.items.findIndex(i => i.id === dragId), item = draft.items.splice(from, 1)[0];
-      draft.items.splice(draft.items.findIndex(i => i.id === row.dataset.row), 0, item);
-      dragId = null; dirty = true; renderItems(); refreshInvoice();
-    });
-  });
-  // keyboard reordering: Alt + ↑/↓ in a description field
-  box.addEventListener('keydown', e => {
-    if (!e.altKey || !['ArrowUp', 'ArrowDown'].includes(e.key) || !e.target.dataset.item) return;
-    e.preventDefault();
-    const id = e.target.dataset.item, i = draft.items.findIndex(x => x.id === id), j = i + (e.key === 'ArrowUp' ? -1 : 1);
-    if (j < 0 || j >= draft.items.length) return;
-    [draft.items[i], draft.items[j]] = [draft.items[j], draft.items[i]];
-    dirty = true; renderItems(); refreshInvoice(); $(`[data-item="${id}"][data-k="desc"]`).focus();
-  });
+function renderItemList() {
+  const box = $('#item-list'); if (!box) return;
+  box.innerHTML = draft.items.length ? `<div class="item-cards">${draft.items.map(it => `<button class="item-card" type="button" data-act="item-edit" data-id="${it.id}">
+      <span class="ic-main"><b>${esc(String(it.desc).split('\n')[0] || 'Untitled item')}</b><small>Qty ${esc(num(it.qty))} × ${esc(money(num(it.price), draft.currency))}</small></span>
+      <span class="ic-amt">${esc(money(fromCents(lineCents(it)), draft.currency))}</span></button>`).join('')}</div>` : '';
 }
 let pvRaf = 0;
 function refreshInvoice() {
   if (!draft) return;
   const t = totals(draft), cur = draft.currency, s = S();
   const orig = !draft._isNew && findDoc(draft.id), paid = orig ? balances(orig).paid : 0;
-  const n = draft.items.filter(i => String(i.desc).trim() || num(i.price)).length;
-  const cnt = $('#item-count'); if (cnt) cnt.textContent = n ? plural(n, 'item') : '';
-  $('#ed-totals').innerHTML = `
-    <div class="ln"><span>Subtotal</span><b>${esc(money(t.sub, cur))}</b></div>
-    ${t.disc ? `<div class="ln"><span>Discount${draft.discountType === 'pct' ? ` (${esc(num(draft.discount))}%)` : ''}</span><b>−${esc(money(t.disc, cur))}</b></div>` : ''}
-    ${t.tax ? `<div class="ln"><span>${esc(s.taxLabel || 'Tax')} (${esc(num(draft.taxRate))}%)</span><b>${esc(money(t.tax, cur))}</b></div>` : ''}
-    <div class="ln grand"><span>Total</span><b>${esc(money(t.total, cur))}</b></div>
-    ${paid ? `<div class="ln"><span>Amount paid</span><b>−${esc(money(paid, cur))}</b></div><div class="ln"><span>Outstanding balance</span><b>${esc(money(Math.max(0, t.total - paid), cur))}</b></div>` : ''}`;
+  const locked = paid > 0;
+  $('#sum').innerHTML = `
+    <div class="sum-row"><span>Currency</span>${locked ? `<b>${esc(cur)}</b>` : `<label class="cur-pick"><select data-act-change="currency" aria-label="Currency">${CURRENCIES.map(([c, n]) => `<option value="${c}"${c === cur ? ' selected' : ''}>${c}</option>`).join('')}</select>${ic('chevDown')}</label>`}</div>
+    <div class="sum-row"><span>Subtotal</span><span class="num">${esc(money(t.sub, cur))}</span></div>
+    ${t.disc ? `<div class="sum-row"><span>Discount${draft.discountType === 'pct' ? ` (${esc(num(draft.discount))}%)` : ''}</span><span class="num">−${esc(money(t.disc, cur))}</span></div>` : ''}
+    ${t.tax ? `<div class="sum-row"><span>${esc((draft.biz && draft.biz.taxLabel) || s.taxLabel || 'Tax')} (${esc(num(draft.taxRate))}%)</span><span class="num">${esc(money(t.tax, cur))}</span></div>` : ''}
+    <div class="sum-row total"><span>Total</span><b class="num">${esc(money(t.total, cur))}</b></div>
+    ${paid ? `<div class="sum-row"><span>Already paid</span><span class="num">−${esc(money(paid, cur))}</span></div><div class="sum-row"><span>Still owed</span><b class="num">${esc(money(Math.max(0, t.total - paid), cur))}</b></div>` : ''}`;
+  const sel = $('#sum select'); if (sel) sel.onchange = () => { draft.currency = sel.value; dirty = true; renderItemList(); refreshInvoice(); };
+  const days = draft.terms !== 'custom' && draft.terms !== undefined ? num(draft.terms) : daysBetween(draft.issueDate, draft.dueDate);
+  $('#auto-note').innerHTML = draft._isNew
+    ? `Number ${esc(draft._numberCustom ? draft.number : nextNumber('invoice'))}, due ${esc(fmtDate(draft.dueDate))}${days === 0 ? ' (on receipt)' : ` (${plural(days, 'day')})`}. Number and payment terms are applied automatically.`
+    : `${esc(draft.number)}, issued ${esc(fmtDate(draft.issueDate))}, due ${esc(fmtDate(draft.dueDate))}.`;
+  if (draft._isNew && !draft._numberCustom) draft.number = nextNumber('invoice');
   cancelAnimationFrame(pvRaf);
-  pvRaf = requestAnimationFrame(() => { const p = $('#preview'); if (p && draft) { const pages = renderPreview(p, draft); const c = $('#pg-count'); if (c) c.textContent = plural(pages, 'page'); } });
+  pvRaf = requestAnimationFrame(() => { const p = $('#preview'); if (p && draft && p.offsetParent) { const n = renderPreview(p, draft); const c = $('#pg-count'); if (c) c.textContent = plural(n, 'page'); } });
 }
-function addItem(fields = {}) {
-  const blank = draft.items.length === 1 && !draft.items[0].desc && !num(draft.items[0].price);
-  const it = { id: uid(), desc: '', qty: 1, price: '', ...fields };
-  if (blank && fields.desc) draft.items[0] = it; else draft.items.push(it);
-  dirty = true; renderItems(); refreshInvoice();
-  if (!fields.desc) { const el = $(`[data-item="${it.id}"][data-k="desc"]`); if (el) el.focus(); }
-}
-async function saveInvoice(mode, btn) {
-  const d = draft; if (!d) return;
-  clearErrors($('#ed-form'));
-  const final = mode === 'final';
-  d.number = String(d.number || '').trim();
-  d.client.name = String(d.client.name || '').trim();
-  const items = d.items.filter(i => String(i.desc).trim() || num(i.price));
-  const problems = [];
-  if (!d.number) { problems.push('Add an invoice number.'); setFieldError($('#f-num'), 'Required'); }
-  else if (numberTaken(d.number, d.id)) { problems.push(`${d.number} is already used.`); setFieldError($('#f-num'), 'This number is already used.'); }
-  if (final) {
-    if (!d.client.name) { problems.push('Choose or add a client.'); const c = $('#client-combo') || $('#cf-name'); if (c) setFieldError(c, 'Choose a client or add a new one.'); }
-    if (!items.length) problems.push('Add at least one item.');
-    if (items.some(i => !String(i.desc).trim())) problems.push('Every item needs a description.');
-    if (items.some(i => num(i.qty) <= 0)) problems.push('Quantities must be more than zero.');
-    if (d.dueDate && d.issueDate && d.dueDate < d.issueDate) { problems.push('The due date is before the issue date.'); setFieldError($('#f-due'), 'Must be on or after the issue date.'); }
-  }
-  const t = totals({ ...d, items });
-  const orig = !d._isNew && findDoc(d.id);
-  if (orig && t.totalCents < balances(orig).paidCents) problems.push(`The new total is less than the ${money(balances(orig).paid, d.currency)} already paid. Void a receipt first.`);
-  if (problems.length) { toast(problems[0], { error: true }); if (mq('(max-width:1099px)')) setEditorTab('edit'); return; }
-
-  // client record: reuse, create, or update, never duplicate silently
-  let client = d.clientId && findClient(d.clientId);
-  if (d.client.name && !client) {
-    const dup = findDuplicateClient(d.client);
-    if (dup) {
-      const use = await confirmDialog({ title: `Use existing client ${dup.name}?`, message: `A client with matching ${dup.name.toLowerCase() === d.client.name.toLowerCase() ? 'name' : 'contact details'} already exists. Link this invoice to them instead of creating a duplicate.`, ok: `Use ${dup.name}`, cancel: 'Create new' });
-      if (use) client = dup;
+/* Add or edit one item in a focused sheet */
+function itemSheet(itemId) {
+  const existing = itemId && draft.items.find(i => i.id === itemId);
+  const it = existing ? { ...existing } : { id: uid(), desc: '', qty: 1, price: '' };
+  const cur = draft.currency;
+  const prods = !existing ? [...DB.products].sort((a, b) => a.name.localeCompare(b.name)) : [];
+  const dlg = openDialog({
+    title: existing ? 'Edit item' : 'Add item', width: 480,
+    body: `<div class="form-stack">
+      ${prods.length ? `<div><div class="pick-label" style="margin-top:0">Saved items</div><div class="saved-chips">${prods.slice(0, 12).map(p => `<button class="chip-out" type="button" data-prod="${p.id}">${esc(p.name)}<small>${esc(money(num(p.price), p.currency || cur))}</small></button>`).join('')}</div></div>` : ''}
+      <div class="field"><label for="it-d">What are you charging for?</label><input class="input" id="it-d" value="${esc(it.desc)}" placeholder="e.g. Custom kaba and slit" autocomplete="off"><div class="err"></div></div>
+      <div class="grid-qty">
+        <div class="field"><label for="it-q">Quantity</label><div class="stepper"><button type="button" data-step="-1" aria-label="Less">${ic('minus')}</button><input class="input num" id="it-q" inputmode="decimal" value="${esc(it.qty)}"><button type="button" data-step="1" aria-label="More">${ic('plus')}</button></div></div>
+        <div class="field"><label for="it-p">Price each</label><div class="money-in"><span>${esc(symbolOf(cur))}</span><input class="input num" id="it-p" inputmode="decimal" value="${esc(it.price)}" placeholder="0.00"></div><div class="err"></div></div>
+      </div>
+      <div class="line-preview"><span>Line total</span><b id="it-t" class="num"></b></div>
+      ${!existing ? `<label class="checkbox"><input type="checkbox" id="it-save">Save to my items for next time</label>` : ''}
+    </div>`,
+    foot: existing
+      ? `<button class="btn btn-ghost danger-text" data-it="del">${ic('trash')}Remove</button><span style="flex:1"></span>${draft.items.length > 1 ? `<button class="icon-btn" data-it="up" aria-label="Move up">${ic('arrowUp')}</button><button class="icon-btn" data-it="down" aria-label="Move down">${ic('arrowDown')}</button>` : ''}<button class="btn btn-primary" data-it="ok">Done</button>`
+      : `<button class="btn btn-secondary" data-it="another">Add another</button><button class="btn btn-primary" data-it="ok">Add item</button>`,
+    onMount(b, api) {
+      const dI = $('#it-d', b), qI = $('#it-q', b), pI = $('#it-p', b);
+      const upd = () => { $('#it-t', b).textContent = money(fromCents(Math.round(num(qI.value) * toCents(pI.value))), cur); };
+      [qI, pI].forEach(i => i.addEventListener('input', upd)); upd();
+      setTimeout(() => (existing ? pI : dI).focus(), 80);
+      b.addEventListener('click', e => {
+        const st = e.target.closest('[data-step]'); if (st) { qI.value = Math.max(1, num(qI.value) + +st.dataset.step); upd(); return; }
+        const pr = e.target.closest('[data-prod]'); if (pr) { const p = DB.products.find(x => x.id === pr.dataset.prod); dI.value = p.description ? `${p.name}\n${p.description}` : p.name; pI.value = String(num(p.price)); it.productId = p.id; upd(); setFieldError(dI, ''); return; }
+      });
+      const commit = () => {
+        clearErrors(b);
+        it.desc = dI.value.trim(); it.qty = num(qI.value) > 0 ? num(qI.value) : 1; it.price = pI.value.trim();
+        if (!it.desc) { setFieldError(dI, 'Describe the item'); dI.focus(); return false; }
+        if (num(it.price) < 0) { setFieldError(pI, 'Price can’t be negative'); return false; }
+        it.price = String(fromCents(toCents(it.price)));
+        const i = draft.items.findIndex(x => x.id === it.id);
+        if (i < 0) draft.items.push(it); else draft.items[i] = it;
+        const save = $('#it-save', b);
+        if (save && save.checked && !DB.products.some(p => p.name.toLowerCase() === it.desc.split('\n')[0].toLowerCase())) putProduct({ id: uid(), name: it.desc.split('\n')[0], description: it.desc.split('\n').slice(1).join('\n'), price: num(it.price), currency: cur, createdAt: Date.now() });
+        dirty = true; renderItemList(); refreshInvoice(); return true;
+      };
+      $('.dialog', api.el).addEventListener('click', e => {
+        const a = e.target.closest('[data-it]'); if (!a) return;
+        const k = a.dataset.it;
+        if (k === 'ok') { if (commit()) api.close(); }
+        if (k === 'another') { if (commit()) { api.close(); setTimeout(() => itemSheet(), 240); } }
+        if (k === 'del') { draft.items = draft.items.filter(x => x.id !== it.id); dirty = true; renderItemList(); refreshInvoice(); api.close(); }
+        if (k === 'up' || k === 'down') {
+          const i = draft.items.findIndex(x => x.id === it.id), j = i + (k === 'up' ? -1 : 1);
+          if (i >= 0 && j >= 0 && j < draft.items.length) { [draft.items[i], draft.items[j]] = [draft.items[j], draft.items[i]]; dirty = true; renderItemList(); refreshInvoice(); }
+        }
+      });
+      b.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); if (commit()) api.close(); } });
     }
-    if (!client) client = putClient({ id: uid(), name: d.client.name, email: d.client.email.trim(), phone: d.client.phone.trim(), address: d.client.address.trim(), notes: '', createdAt: Date.now() }, true);
-  } else if (client && d._cmode === 'edit' && d._updateClient !== false) {
-    putClient({ ...client, name: d.client.name || client.name, email: d.client.email.trim(), phone: d.client.phone.trim(), address: d.client.address.trim() }, true);
-  }
-  const clean = {
-    ...d, clientId: client ? client.id : null,
-    client: client ? { name: d.client.name || client.name, email: d.client.email || client.email || '', phone: d.client.phone || client.phone || '', address: d.client.address || client.address || '' } : { ...d.client },
-    items: items.map(i => ({ id: i.id, desc: String(i.desc).trim(), qty: num(i.qty) || 1, price: num(i.price), ...(i.productId ? { productId: i.productId } : {}) })),
-    discount: num(d.discount), taxRate: num(d.taxRate),
-    status: final ? (orig && orig.status === 'paid' && !receipts().some(r => r.linkedInvoiceId === orig.id) ? 'paid' : 'issued') : 'draft'
-  };
-  if (!final && orig && orig.status !== 'draft') clean.status = orig.status;   // never demote an issued invoice to draft
-  Object.keys(clean).filter(k => k.startsWith('_')).forEach(k => delete clean[k]);
-  if (btn) btn.classList.add('loading');
-  putDoc(clean);
-  dirty = false; draft = null;
-  toast(`${clean.number} ${clean.status === 'draft' ? 'saved as draft' : d._isNew ? 'created' : 'saved'}`);
-  location.replace(`#/invoices/${clean.id}`);
+  });
 }
-function setEditorTab(k) {
-  const ed = $('#editor'); if (!ed) return;
-  ed.dataset.tab = k;
-  $$('.ed-tabs [data-k]').forEach(b => b.classList.toggle('on', b.dataset.k === k));
-  if (k === 'preview') { if (draft && draft.type === 'invoice') refreshInvoice(); else refreshReceipt(); }
-  scrollTo(0, 0);
+/* Everything that rarely changes, for this one invoice */
+function customizeSheet() {
+  const d = draft, s = S();
+  const dlg = openDialog({
+    title: 'Customize this invoice', width: 560, full: true,
+    body: `<p class="muted small" style="margin:0 0 16px">These start from your Settings. Changes here apply to this invoice only.</p>
+    <div class="form-stack">
+      <div class="grid-2">
+        <div class="field"><label for="o-issue">Invoice date</label><input class="input" type="date" id="o-issue" data-o="issueDate" value="${esc(d.issueDate)}"></div>
+        <div class="field"><label for="o-terms">Payment due</label><select class="input" id="o-terms" data-o="terms">${TERMS.map(([k, l]) => `<option value="${k}"${String(d.terms) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="field" id="o-due-f" ${d.terms === 'custom' ? '' : 'hidden'}><label for="o-due">Due date</label><input class="input" type="date" id="o-due" data-o="dueDate" value="${esc(d.dueDate)}"><div class="err"></div></div>
+      <div class="grid-2">
+        <div class="field"><label for="o-disc">Discount</label><div class="input-group"><input class="input num" id="o-disc" data-o="discount" inputmode="decimal" placeholder="0" value="${esc(d.discount)}">
+          <div class="seg" id="o-dseg"><button type="button" data-dt="pct" class="${d.discountType === 'pct' ? 'on' : ''}">%</button><button type="button" data-dt="amt" class="${d.discountType !== 'pct' ? 'on' : ''}">${esc(symbolOf(d.currency))}</button></div></div></div>
+        <div class="field"><label for="o-tax">${esc((d.biz && d.biz.taxLabel) || s.taxLabel || 'Tax')} (%)</label><input class="input num" id="o-tax" data-o="taxRate" inputmode="decimal" placeholder="0" value="${esc(d.taxRate)}"></div>
+      </div>
+      <label class="checkbox"><input type="checkbox" data-o="showPayment"${d.showPayment !== false ? ' checked' : ''}>Show my payment details on this invoice</label>
+      <div class="field"><label for="o-notes">Note to the client</label><textarea class="input" id="o-notes" data-o="notes" rows="2" placeholder="Optional">${esc(d.notes || '')}</textarea></div>
+      <details class="disclosure inline"><summary>More</summary><div class="form-stack" style="margin-top:12px">
+        <div class="field"><label for="o-num">Invoice number</label><input class="input num" id="o-num" data-o="number" value="${esc(d._isNew && !d._numberCustom ? nextNumber('invoice') : d.number)}"><div class="hint">Set automatically. Change it only if you need a specific number.</div><div class="err"></div></div>
+        <div class="field"><label for="o-tt">Terms and conditions</label><textarea class="input" id="o-tt" data-o="termsText" rows="2">${esc(d.termsText || '')}</textarea></div>
+        <div class="field"><label for="o-foot">Closing line</label><input class="input" id="o-foot" data-o="footer" value="${esc(d.footer ?? s.footer)}"></div>
+        <div class="field"><label>Look</label><div class="seg">${['classic', 'modern', 'minimal'].map(t => `<button type="button" data-tpl="${t}" class="${(d.template || s.template) === t ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+      </div></details>
+    </div>`,
+    foot: `<button class="btn btn-primary btn-block-sm" data-close>Done</button>`,
+    onMount(b) {
+      b.addEventListener('input', e => {
+        const t = e.target, k = t.dataset.o; if (!k) return;
+        const v = t.type === 'checkbox' ? t.checked : t.value;
+        d[k] = v;
+        if (k === 'number') { d._numberCustom = true; setFieldError(t, numberTaken(v, d.id) ? 'This number is already used' : ''); }
+        if (k === 'terms') { $('#o-due-f', b).hidden = v !== 'custom'; if (v !== 'custom') { d.dueDate = addDays(d.issueDate || todayISO(), num(v)); $('#o-due', b).value = d.dueDate; } }
+        if (k === 'issueDate' && d.terms !== 'custom' && v) { d.dueDate = addDays(v, num(d.terms)); $('#o-due', b).value = d.dueDate; }
+        if (k === 'dueDate') setFieldError(t, v < d.issueDate ? 'Must be on or after the invoice date' : '');
+        dirty = true; refreshInvoice();
+      });
+      b.addEventListener('change', e => { if (e.target.tagName === 'SELECT' || e.target.type === 'date') e.target.dispatchEvent(new Event('input', { bubbles: true })); });
+      b.addEventListener('click', e => {
+        const dt = e.target.closest('[data-dt]'); if (dt) { d.discountType = dt.dataset.dt; $$('[data-dt]', b).forEach(x => x.classList.toggle('on', x === dt)); dirty = true; refreshInvoice(); }
+        const tp = e.target.closest('[data-tpl]'); if (tp) { d.template = tp.dataset.tpl; $$('[data-tpl]', b).forEach(x => x.classList.toggle('on', x === tp)); dirty = true; refreshInvoice(); }
+      });
+    }
+  });
+}
+let saving = false;
+async function saveInvoice(mode, btn) {
+  const d = draft; if (!d || saving) return;
+  const final = mode === 'final';
+  if (final && !(d.client && d.client.name)) { toast('Choose who the invoice is for', { error: true }); pickClient(c => { d.clientId = c.id; d.client = snap(c); dirty = true; $('#client-slot').innerHTML = clientRowHTML(d); refreshInvoice(); }); return; }
+  if (final && !d.items.length) { toast('Add at least one item', { error: true }); itemSheet(); return; }
+  if (d.dueDate && d.issueDate && d.dueDate < d.issueDate) { toast('The due date is before the invoice date. Check Customize invoice.', { error: true }); return; }
+  const orig = !d._isNew && findDoc(d.id);
+  if (orig && totals(d).totalCents < balances(orig).paidCents) { toast(`The new total is less than the ${money(balances(orig).paid, d.currency)} already paid.`, { error: true }); return; }
+  saving = true; if (btn) btn.classList.add('loading');
+  try {
+    // number: claimed now, so it is unique even if two people create invoices at once
+    if (d._isNew || (d._numberCustom && orig && d.number !== orig.number)) {
+      const res = await claimNumber('invoice', d.id, d._numberCustom ? String(d.number).trim() : undefined);
+      if (res.taken) { toast(`${d.number} is already used. Choose another number in Customize invoice.`, { error: true }); return; }
+      d.number = res.number;
+    }
+    const client = d.clientId && findClient(d.clientId);
+    const clean = {
+      ...d, client: client ? snap({ ...client, ...d.client }) : { ...blankClient(), ...d.client },
+      items: d.items.map(i => ({ id: i.id, desc: String(i.desc).trim(), qty: num(i.qty) || 1, price: num(i.price), ...(i.productId ? { productId: i.productId } : {}) })),
+      discount: num(d.discount), taxRate: num(d.taxRate),
+      status: final ? (orig && orig.status === 'paid' && !receipts().some(r => r.linkedInvoiceId === orig.id) ? 'paid' : 'issued') : (orig && orig.status !== 'draft' ? orig.status : 'draft'),
+      biz: d.biz || snapshotBiz()      // business details are frozen onto the invoice
+    };
+    Object.keys(clean).filter(k => k.startsWith('_')).forEach(k => delete clean[k]);
+    putDoc(clean);
+    dirty = false; draft = null;
+    toast(clean.status === 'draft' ? `Draft ${clean.number} saved` : d._isNew ? `Invoice ${clean.number} created` : `${clean.number} saved`);
+    location.replace(`#/invoices/${clean.id}`);
+  } finally { saving = false; if (btn && btn.isConnected) btn.classList.remove('loading'); }
 }
 
 /* =====================================================================
-   Receipts
+   Receipt editor: who paid, how much, how. That's it.
    ===================================================================== */
-function filteredReceipts() {
-  const st = LS.receipts, q = st.q.trim().toLowerCase(), range = rangeOf(st);
-  const list = receipts().filter(r => (st.period === 'all' || inRange(r.issueDate, range)) && (!st.client || r.clientId === st.client)
-    && (!q || [r.number, r.client && r.client.name, r.reference, r.description, r.invoiceNumber, (findDoc(r.linkedInvoiceId) || {}).number].join(' ').toLowerCase().includes(q)));
-  return sortBy(list, st.sort, st.dir, (r, k) => k === 'amount' ? receiptCents(r) : k === 'client' ? clientName(r).toLowerCase() : k === 'number' ? String(r.number) : r[k] || '');
-}
-const RC_COLS = '110px minmax(0,1.4fr) 100px minmax(0,1fr) 120px 128px 34px';
-function receiptRow(r) {
-  const inv = r.linkedInvoiceId && findDoc(r.linkedInvoiceId);
-  return `<div class="tbl-row" style="--cols:${RC_COLS}" data-href="#/receipts/${r.id}" tabindex="0" role="link">
-    <span class="cell-main num">${esc(r.number)}</span>
-    <div class="cell-2" data-m="a"><span class="cell-main">${esc(clientName(r))}</span><span class="cell-sub m-only">${esc(r.number)}</span></div>
-    <span class="t2" data-m="c">${esc(fmtShort(r.issueDate))}<span class="m-only">, ${esc(r.paymentMethod || '')}</span></span>
-    <span class="t2 ellipsis">${inv ? `<a href="#/invoices/${inv.id}" style="text-decoration:underline;text-underline-offset:3px">${esc(inv.number)}</a>` : r.invoiceNumber ? esc(r.invoiceNumber) : '<span class="muted">Standalone</span>'}</span>
-    <span class="amount r" data-m="b" ${isVoid(r) ? 'style="text-decoration:line-through;color:var(--text-3)"' : ''}>${esc(money(receiptAmount(r), r.currency))}</span>
-    <span data-m="d">${isVoid(r) ? badge(r) : `<span class="badge plain">${esc(r.paymentMethod || 'Payment')}</span>`}</span>
-    <button class="icon-btn sm row-menu" data-act="doc-menu" data-id="${r.id}" aria-label="Actions for ${esc(r.number)}" aria-haspopup="menu">${ic('more')}</button>
-  </div>`;
-}
-function receiptTableHTML() {
-  const list = filteredReceipts();
-  if (loadingData()) return `<div class="tbl">${skeletonRows(8)}</div>`;
-  if (!receipts().length) return emptyHTML('receipt', 'No receipts yet', 'Receipts are created when you record a payment on an invoice, or on their own for any payment.', '<a class="btn btn-primary" href="#/receipts/new">New receipt</a>');
-  const page = pageSlice('receipts', list);
-  const total = list.filter(r => !isVoid(r) && r.currency === S().currency).reduce((a, r) => a + receiptCents(r), 0);
-  return `<div class="tbl" role="table">
-    <div class="tbl-row tbl-head" style="--cols:${RC_COLS}">${sortBtn('receipts', 'number', 'Number')}${sortBtn('receipts', 'client', 'Received from')}${sortBtn('receipts', 'issueDate', 'Date')}<span>Invoice</span><span class="r">${sortBtn('receipts', 'amount', 'Amount')}</span><span>Method</span><span></span></div>
-    <div class="tbl-body">${page.length ? page.map(receiptRow).join('') : emptyHTML('search', 'No receipts match', 'Try a different search, client or date range.', '<button class="btn btn-secondary btn-sm" data-act="clear-filters" data-list="receipts">Clear filters</button>')}</div>
-  </div>${pagerHTML('receipts', list.length).replace('</span>', `</span><span>${list.length ? `Total ${esc(money(fromCents(total), S().currency))}` : ''}</span>`)}`;
-}
-function viewReceipts() {
-  const st = LS.receipts;
-  return {
-    title: 'Receipts',
-    topbar: { crumbs: [['Receipts']], actions: `<a class="btn btn-primary btn-sm hide-sm" href="#/receipts/new">${ic('plus')}New receipt</a>` },
-    html: `<div class="content">
-      ${pageHead('Receipts', 'Every payment received, linked to its invoice where there is one.', `<button class="btn btn-secondary" data-act="export-csv" data-k="receipts">${ic('download')}Export</button><a class="btn btn-primary" href="#/receipts/new">${ic('plus')}New receipt</a>`)}
-      <section class="card">
-        <div class="toolbar">
-          <div class="input-affix grow">${ic('search')}<input class="input" id="list-q" data-list="receipts" type="search" placeholder="Search number, client, reference" value="${esc(st.q)}" autocomplete="off"></div>
-          <select class="input" data-lf="client" data-list="receipts" aria-label="Client"><option value="">All clients</option>${[...DB.clients].sort((a, b) => a.name.localeCompare(b.name)).map(c => `<option value="${c.id}"${st.client === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
-          ${periodSelect('receipts', st)}
-        </div>
-        <div id="list-body">${receiptTableHTML()}</div>
-      </section>
-    </div><a class="btn btn-primary fab" href="#/receipts/new">${ic('plus')}New receipt</a>`,
-    mount: bindListControls
-  };
-}
-function viewReceipt(id) {
-  const r = findDoc(id);
-  if (!r || r.type !== 'receipt') return notFound('Receipt', '#/receipts');
-  const inv = r.linkedInvoiceId && findDoc(r.linkedInvoiceId), b = inv && balances(inv);
-  return {
-    title: r.number,
-    topbar: { crumbs: [['Receipts', '#/receipts'], [r.number]], actions: `<button class="btn btn-secondary btn-sm hide-sm" data-act="dl" data-id="${r.id}">${ic('download')}PDF</button>` },
-    html: `<div class="detail">
-      <div class="workspace ws-scroll"><div class="ws-bar"><span>${isVoid(r) ? 'Void receipt' : 'Receipt'}</span><span id="pg-count"></span></div><div id="preview" style="max-width:820px;margin:0 auto"></div></div>
-      <aside class="side" aria-label="Receipt summary">
-        <div class="side-sec">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px"><a class="cell-main ellipsis" href="${r.clientId ? '#/clients/' + r.clientId : '#/clients'}" style="font-size:15px">${esc(clientName(r))}</a>${isVoid(r) ? badge(r) : '<span class="badge paid">Received</span>'}</div>
-          <div class="big-amt num" ${isVoid(r) ? 'style="text-decoration:line-through;color:var(--text-3)"' : ''}><span class="cur">${esc(r.currency)}</span>${esc(plainAmount(receiptAmount(r)))}</div>
-          ${isVoid(r) ? `<p class="muted" style="margin:10px 0 0;font-size:13px">Voided ${esc(fmtDate(r.voidedAt.slice(0, 10)))}${r.voidReason ? `: ${esc(r.voidReason)}` : ''}</p>` : ''}
-        </div>
-        <div class="side-sec" style="display:grid;gap:10px">
-          <div class="actions-grid">
-            <a class="act" href="#/receipts/${r.id}/edit">${ic('edit')}Edit</a>
-            <button class="act" data-act="dl" data-id="${r.id}">${ic('download')}PDF</button>
-            <button class="act" data-act="print" data-id="${r.id}">${ic('print')}Print</button>
-            <button class="act" data-act="share" data-id="${r.id}">${ic('share')}Share</button>
-          </div>
-          ${isVoid(r) ? `<button class="btn btn-ghost btn-sm" data-act="rc-restore" data-id="${r.id}">${ic('sync')}Restore receipt</button>` : `<button class="btn btn-ghost btn-sm" data-act="rc-void" data-id="${r.id}" style="color:var(--red)">${ic('ban')}Void receipt</button>`}
-        </div>
-        <div class="side-sec"><h3>Payment</h3>
-          <div class="kv"><span>Number</span><b>${esc(r.number)}</b></div>
-          <div class="kv"><span>Date</span><b>${esc(fmtDate(r.issueDate))}</b></div>
-          <div class="kv"><span>Method</span><b>${esc(r.paymentMethod || '—')}</b></div>
-          ${r.reference ? `<div class="kv"><span>Reference</span><b>${esc(r.reference)}</b></div>` : ''}
-          ${r.description ? `<div class="kv"><span>For</span><b>${esc(r.description)}</b></div>` : ''}
-        </div>
-        ${inv ? `<div class="side-sec"><h3>Invoice</h3>
-          <div class="kv"><span>Invoice</span><b><a href="#/invoices/${inv.id}">${esc(inv.number)}</a></b></div>
-          <div class="kv"><span>Total</span><b>${esc(money(b.total, inv.currency))}</b></div>
-          <div class="kv"><span>Paid to date</span><b>${esc(money(b.paid, inv.currency))}</b></div>
-          <div class="kv"><span>Balance</span><b>${b.balanceCents ? esc(money(b.balance, inv.currency)) : 'Fully paid'}</b></div>
-          <div style="margin-top:6px">${badge(inv)}</div>
-        </div>` : r.invoiceNumber ? `<div class="side-sec"><h3>Invoice</h3><p class="muted" style="margin:0;font-size:13px">${esc(r.invoiceNumber)} has been deleted. This receipt is kept as a record.</p></div>` : ''}
-      </aside>
-    </div>`,
-    mount(el) { const n = renderPreview($('#preview', el), r); $('#pg-count', el).textContent = plural(n, 'page'); }
-  };
-}
-
-/* ---------- receipt editor ---------- */
 function openInvoicesFor(clientId) {
-  return invoices().filter(d => countsAsIssued(d) && balances(d).balanceCents > 0 && (!clientId || d.clientId === clientId)).sort(byDateDesc);
+  return invoices().filter(d => countsAsIssued(d) && balances(d).balanceCents > 0 && (!clientId || d.clientId === clientId)).sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
 }
 function viewReceiptEditor(id, query = {}) {
   const isNew = !id;
@@ -1031,84 +919,52 @@ function viewReceiptEditor(id, query = {}) {
     const inv = query.invoice && findDoc(query.invoice);
     const client = query.client && findClient(query.client);
     draft = newReceipt(inv && countsAsIssued(inv) ? inv : null, client);
-    draft._mode = inv ? 'invoice' : (query.mode === 'standalone' || client ? 'standalone' : (openInvoicesFor().length ? 'invoice' : 'standalone'));
+    draft._fromInvoice = !!(inv && countsAsIssued(inv));
+    if (!draft._fromInvoice && client) { const open = openInvoicesFor(client.id); draft._linkChoice = open.length ? null : 'none'; }
   }
   draft._isNew = isNew;
-  if (!isNew) draft._mode = draft.linkedInvoiceId ? 'invoice' : 'standalone';
-  draft._cmode = draft.client && draft.client.name ? 'card' : 'pick';
   const title = isNew ? 'New receipt' : `Edit ${draft.number}`;
   return {
-    title,
-    topbar: { crumbs: [['Receipts', '#/receipts'], [title]], actions: `<button class="btn btn-primary btn-sm hide-sm" data-act="rc-save">${ic('check')}${isNew ? 'Save receipt' : 'Save changes'}</button>` },
-    html: `<div class="editor" data-tab="edit" id="editor">
-      <div class="ed-tabs"><div class="seg"><button class="on" data-act="ed-tab" data-k="edit">${ic('edit')}Edit</button><button data-act="ed-tab" data-k="preview">${ic('eye')}Preview</button></div></div>
-      <div class="ed-panel"><div class="ed-panel-inner" id="ed-form"></div></div>
-      <div class="ed-preview workspace ws-scroll"><div class="ws-bar"><span>Live preview</span><span id="pg-count"></span></div><div id="preview" style="max-width:820px;margin:0 auto"></div></div>
-      <div class="ed-mobile-bar"><button class="btn btn-primary" data-act="rc-save">${isNew ? 'Save receipt' : 'Save changes'}</button></div>
+    topbar: { crumbs: [['Receipts', '#/receipts'], [title]], back: isNew ? (draft._fromInvoice ? `#/invoices/${draft.linkedInvoiceId}` : '#/receipts') : `#/receipts/${draft.id}`, search: false,
+      actions: `<button class="btn btn-primary btn-sm hide-sm" data-act="rc-save">${isNew ? 'Save receipt' : 'Save changes'}</button>` },
+    html: `<div class="ed2" id="editor">
+      <div class="ed2-main"><div class="ed2-inner" id="rc-form"></div></div>
+      <div class="ed2-preview workspace"><div class="ws-bar"><span>Preview</span><span id="pg-count"></span></div><div id="preview" style="max-width:820px;margin:0 auto"></div></div>
     </div>`,
-    mount(el) {
-      renderReceiptForm();
-      const form = $('#ed-form', el);
-      form.addEventListener('input', onReceiptInput);
-      form.addEventListener('change', onReceiptInput);
-    }
+    mount() { renderReceiptForm(); }
   };
 }
-function receiptFormHTML() {
-  const r = draft, isNew = r._isNew, inv = r.linkedInvoiceId && findDoc(r.linkedInvoiceId);
-  const locked = !isNew;
-  let invBox = '';
-  if (r._mode === 'invoice') {
-    if (inv) {
-      const b = balances(inv), other = isNew ? b.balanceCents : b.balanceCents + receiptCents(findDoc(r.id) || { amount: 0 });
-      invBox = `<div class="client-card"><span class="avatar">${ic('invoice')}</span><div class="who"><b>${esc(inv.number)}, ${esc(clientName(inv))}</b>
-        <small>Total ${esc(money(b.total, inv.currency))}, paid ${esc(money(b.paid, inv.currency))}\nBalance ${esc(money(fromCents(isNew ? b.balanceCents : other), inv.currency))}</small></div>
-        ${isNew && !current.query.invoice ? '<button class="btn btn-secondary btn-sm" type="button" data-act="rc-inv-change">Change</button>' : ''}</div>`;
-    } else invBox = `<div class="field"><div class="combo"><div class="input-affix">${ic('search')}<input class="input" id="inv-combo" placeholder="Search open invoices by number or client" autocomplete="off" aria-label="Invoice"></div></div><div class="err"></div>
-      ${openInvoicesFor().length ? '' : '<div class="hint">There are no open invoices. Record a standalone receipt instead.</div>'}</div>`;
-  }
-  return `
-    ${isNew ? `<section class="ed-sec"><div class="seg full" role="tablist"><button data-act="rc-mode" data-k="invoice" class="${r._mode === 'invoice' ? 'on' : ''}">${ic('invoice')}Payment on an invoice</button><button data-act="rc-mode" data-k="standalone" class="${r._mode === 'standalone' ? 'on' : ''}">${ic('receipt')}Standalone</button></div></section>` : ''}
-    ${r._mode === 'invoice' ? `<section class="ed-sec"><div class="ed-sec-h"><h3><span class="stepn">1</span>Invoice</h3></div>${invBox}</section>`
-      : `<section class="ed-sec" id="sec-client"><div class="ed-sec-h"><h3><span class="stepn">1</span>Received from</h3></div><div id="client-slot">${clientSectionHTML(r)}</div></section>`}
-    <section class="ed-sec"><div class="ed-sec-h"><h3><span class="stepn">2</span>Payment</h3></div>
-      <div class="ed-fields">
-        <div class="grid-2">
-          <div class="field"><label for="r-amt">Amount received</label><input class="input num" id="r-amt" data-f="amount" inputmode="decimal" placeholder="0.00" value="${esc(r.amount)}" ${locked ? 'readonly' : ''}><div class="err"></div>
-            ${locked ? '<div class="hint">Amounts can’t be edited. Void this receipt and record a new one to correct it.</div>' : inv ? `<div class="hint"><button type="button" class="link" data-act="rc-full" style="text-decoration:underline;text-underline-offset:3px">Pay full balance</button></div>` : ''}</div>
-          <div class="field"><label for="r-cur">Currency</label><select class="input" id="r-cur" data-f="currency" ${inv || locked ? 'disabled' : ''}>${CURRENCIES.map(([c, n]) => `<option value="${c}"${c === r.currency ? ' selected' : ''}>${c} · ${n}</option>`).join('')}</select></div>
-        </div>
-        <div class="grid-2">
-          <div class="field"><label for="r-date">Payment date</label><input class="input" type="date" id="r-date" data-f="issueDate" value="${esc(r.issueDate)}" ${locked ? 'readonly' : ''}><div class="err"></div></div>
-          <div class="field"><label for="r-m">Payment method</label><select class="input" id="r-m" data-f="paymentMethod">${METHODS.map(m => `<option${m === r.paymentMethod ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
-        </div>
-        <div class="grid-2">
-          <div class="field"><label for="r-ref">Reference</label><input class="input" id="r-ref" data-f="reference" value="${esc(r.reference || '')}" placeholder="MoMo or bank transaction ID"></div>
-          <div class="field"><label for="r-num">Receipt number</label><input class="input num" id="r-num" data-f="number" value="${esc(r.number)}" ${locked ? 'readonly' : ''}><div class="err"></div></div>
-        </div>
-        <div class="field"><label for="r-desc">Payment for</label><input class="input" id="r-desc" data-f="description" value="${esc(r.description || '')}" placeholder="e.g. Deposit for bridal fitting"></div>
-        <div class="field"><label for="r-notes">Notes</label><textarea class="input" id="r-notes" data-f="notes" rows="2" placeholder="Optional, shown on the receipt">${esc(r.notes || '')}</textarea></div>
-      </div>
-    </section>`;
-}
 function renderReceiptForm() {
-  const form = $('#ed-form'); form.innerHTML = receiptFormHTML();
-  const sec = $('#sec-client', form);
-  if (sec) { const rer = () => { $('#client-slot', sec).innerHTML = clientSectionHTML(draft); bindClientSection(sec, draft, rer); refreshReceipt(); }; draft._rerenderClient = rer; bindClientSection(sec, draft, rer); }
-  const ic_ = $('#inv-combo', form);
-  if (ic_) attachCombo(ic_, {
-    source: q => openInvoicesFor().filter(d => !q || [d.number, clientName(d)].join(' ').toLowerCase().includes(q.toLowerCase())).slice(0, 8)
-      .map(d => ({ icon: 'invoice', label: `${d.number}  ${clientName(d)}`, sub: `${money(balances(d).balance, d.currency)} due`, inv: d })),
-    onPick(o) { const fresh = newReceipt(o.inv); Object.assign(draft, { linkedInvoiceId: o.inv.id, invoiceNumber: o.inv.number, currency: o.inv.currency, clientId: o.inv.clientId, client: { ...o.inv.client }, amount: fresh.amount, description: fresh.description }); dirty = true; renderReceiptForm(); }
-  });
+  const r = draft, box = $('#rc-form'); if (!box) return;
+  const locked = !r._isNew;
+  const inv = r.linkedInvoiceId && findDoc(r.linkedInvoiceId);
+  const open = r.clientId && !r._fromInvoice && r._isNew ? openInvoicesFor(r.clientId) : [];
+  const maxC = maxAllowedCents();
+  box.innerHTML = `
+    <section class="blk"><div class="blk-label">Who paid?</div>
+      ${r._fromInvoice || locked ? `<div class="pick-row static"><span class="avatar">${esc(initials(r.client.name))}</span><span class="pr-main"><b>${esc(r.client.name || 'No name')}</b><small>${esc(r.client.phone || r.client.email || '')}</small></span></div>`
+        : `<div id="client-slot">${clientRowHTML(r, 'Select who paid', 'A client, or someone new')}</div>`}
+    </section>
+    ${open.length ? `<section class="blk"><div class="blk-label">Is this for an invoice?</div><div class="choice-list">
+      ${open.map(d => `<button type="button" class="choice${r.linkedInvoiceId === d.id ? ' on' : ''}" data-act="rc-link" data-id="${d.id}"><span class="radio"></span><span class="pr-main"><b>${esc(d.number)}</b><small>${esc(money(balances(d).balance, d.currency))} still owed${invoiceStatus(d) === 'overdue' ? ', late' : ''}</small></span></button>`).join('')}
+      <button type="button" class="choice${r._linkChoice === 'none' && !r.linkedInvoiceId ? ' on' : ''}" data-act="rc-link" data-id=""><span class="radio"></span><span class="pr-main"><b>No, a separate payment</b></span></button></div></section>` : ''}
+    ${inv && (r._fromInvoice || locked) ? `<section class="blk"><div class="inv-chip">${ic('invoice')}<span>For <b>${esc(inv.number)}</b>, ${esc(money(fromCents(maxC === Infinity ? 0 : maxC), inv.currency))} ${locked ? 'open before this payment' : 'still owed'}</span></div></section>` : ''}
+    <section class="blk"><div class="blk-label">Amount received</div>
+      <div class="amount-in ${locked ? 'locked' : ''}"><span>${esc(symbolOf(r.currency))}</span><input id="r-amt" inputmode="decimal" placeholder="0.00" value="${esc(r.amount)}" ${locked ? 'readonly' : ''} aria-label="Amount received"></div>
+      <div class="field" style="margin-top:6px"><div class="err" id="r-amt-err"></div></div>
+      ${locked ? '<p class="fine left">To change the amount, void this receipt and record a new one.</p>' : inv ? `<button type="button" class="link small" data-act="rc-full">Use the full ${esc(money(fromCents(maxC), r.currency))}</button>` : ''}
+    </section>
+    <section class="blk"><div class="blk-label">How did they pay?</div>
+      <div class="method-chips">${METHODS.map(m => `<button type="button" class="chip-out${r.paymentMethod === m ? ' on' : ''}" data-act="rc-method" data-m="${esc(m)}">${esc(m)}</button>`).join('')}</div></section>
+    <section class="blk"><div class="blk-label">What was it for? <span class="muted">(optional)</span></div>
+      <input class="input" id="r-desc" value="${esc(r.description || '')}" placeholder="e.g. Deposit for bridal fitting"></section>
+    <button class="btn btn-primary btn-lg btn-block main-cta" data-act="rc-save">${r._isNew ? 'Save receipt' : 'Save changes'}</button>
+    <p class="fine">${r._isNew ? `Receipt number and today’s date are added automatically.` : `${esc(r.number)}, received ${esc(fmtDate(r.issueDate))}.`}</p>
+    <div class="ed2-links"><button class="link" data-act="rc-options" type="button">${ic('settings')}More options</button><button class="link lt-wide" data-act="ed-preview" type="button">${ic('eye')}Preview</button></div>`;
+  const amt = $('#r-amt', box), desc = $('#r-desc', box);
+  amt.addEventListener('input', () => { r.amount = amt.value; dirty = true; validateAmount(false); refreshReceipt(); });
+  desc.addEventListener('input', () => { r.description = desc.value; dirty = true; refreshReceipt(); });
   refreshReceipt();
-}
-function onReceiptInput(e) {
-  const t = e.target; if (!draft || !t.dataset.f) return;
-  setPath(draft, t.dataset.f, t.type === 'checkbox' ? t.checked : t.value);
-  if (t.dataset.f === 'number') setFieldError(t, numberTaken(t.value, draft.id) ? 'This number is already used.' : '');
-  if (t.dataset.f === 'amount') validateAmount(false);
-  dirty = true; refreshReceipt();
 }
 function maxAllowedCents() {
   const inv = draft.linkedInvoiceId && findDoc(draft.linkedInvoiceId); if (!inv) return Infinity;
@@ -1116,97 +972,324 @@ function maxAllowedCents() {
   return balances(inv).balanceCents + (self && !isVoid(self) ? receiptCents(self) : 0);
 }
 function validateAmount(strict) {
-  const el = $('#r-amt'); if (!el) return true;
+  const err = $('#r-amt-err'); if (!err) return true;
   const c = toCents(draft.amount), max = maxAllowedCents();
   let msg = '';
-  if (strict && c <= 0) msg = 'Enter the amount received.';
-  else if (c > max) msg = `More than the ${money(fromCents(max), draft.currency)} balance.`;
-  setFieldError(el, msg);
+  if (strict && c <= 0) msg = 'Enter how much you received.';
+  else if (c > max) msg = `That’s more than the ${money(fromCents(max), draft.currency)} still owed.`;
+  err.textContent = msg; err.parentElement.classList.toggle('invalid', !!msg);
+  $('.amount-in').classList.toggle('invalid', !!msg);
   return !msg;
 }
 function refreshReceipt() {
   cancelAnimationFrame(pvRaf);
-  pvRaf = requestAnimationFrame(() => { const p = $('#preview'); if (p && draft) { const n = renderPreview(p, draft); const c = $('#pg-count'); if (c) c.textContent = plural(n, 'page'); } });
+  pvRaf = requestAnimationFrame(() => { const p = $('#preview'); if (p && draft && p.offsetParent) { const n = renderPreview(p, draft); const c = $('#pg-count'); if (c) c.textContent = plural(n, 'page'); } });
+}
+function receiptOptions() {
+  const r = draft, locked = !r._isNew;
+  openDialog({
+    title: 'More options', width: 520, full: true,
+    body: `<div class="form-stack">
+      <div class="field"><label for="ro-date">Date received</label><input class="input" type="date" id="ro-date" data-o="issueDate" value="${esc(r.issueDate)}" ${locked ? 'readonly' : ''}></div>
+      <div class="field"><label for="ro-ref">Transaction reference</label><input class="input" id="ro-ref" data-o="reference" value="${esc(r.reference || '')}" placeholder="MoMo or bank transaction ID"></div>
+      <div class="field"><label for="ro-notes">Note on the receipt</label><textarea class="input" id="ro-notes" data-o="notes" rows="2">${esc(r.notes || '')}</textarea></div>
+      ${!r.linkedInvoiceId && !locked ? `<div class="field"><label for="ro-cur">Currency</label><select class="input" id="ro-cur" data-o="currency">${CURRENCIES.map(([c, n]) => `<option value="${c}"${c === r.currency ? ' selected' : ''}>${c}, ${n}</option>`).join('')}</select></div>` : ''}
+      <div class="field"><label for="ro-num">Receipt number</label><input class="input num" id="ro-num" data-o="number" value="${esc(r._isNew && !r._numberCustom ? nextNumber('receipt') : r.number)}" ${locked ? 'readonly' : ''}><div class="hint">Set automatically.</div><div class="err"></div></div>
+    </div>`,
+    foot: `<button class="btn btn-primary btn-block-sm" data-close>Done</button>`,
+    onMount(b) {
+      const h = e => {
+        const t = e.target, k = t.dataset.o; if (!k || t.readOnly) return;
+        r[k] = t.value; dirty = true;
+        if (k === 'number') { r._numberCustom = true; setFieldError(t, numberTaken(t.value, r.id) ? 'This number is already used' : ''); }
+        if (k === 'currency') renderReceiptForm(); else refreshReceipt();
+      };
+      b.addEventListener('input', h); b.addEventListener('change', h);
+    },
+    onClose() { renderReceiptForm(); }
+  });
 }
 let savingReceipt = false;
 async function saveReceipt(btn) {
   const r = draft; if (!r || savingReceipt) return;
-  clearErrors($('#ed-form'));
-  r.number = String(r.number || '').trim();
-  const problems = [];
-  if (r._mode === 'invoice' && !r.linkedInvoiceId) { problems.push('Choose the invoice this payment is for.'); const c = $('#inv-combo'); if (c) setFieldError(c, 'Choose an invoice.'); }
-  if (r._mode === 'standalone' && !String(r.client.name || '').trim()) { problems.push('Add who the payment is from.'); const c = $('#client-combo') || $('#cf-name'); if (c) setFieldError(c, 'Choose or add a client.'); }
-  if (!validateAmount(true)) problems.push($('#r-amt').closest('.field').querySelector('.err').textContent);
-  if (!r.number) problems.push('Add a receipt number.');
-  else if (numberTaken(r.number, r.id)) { problems.push(`${r.number} is already used.`); setFieldError($('#r-num'), 'This number is already used.'); }
-  if (!r.issueDate) problems.push('Add the payment date.');
-  if (problems.length) { toast(problems[0], { error: true }); if (mq('(max-width:1099px)')) setEditorTab('edit'); return; }
-
+  if (!(r.client && r.client.name)) { toast('Choose who paid', { error: true }); pickClient(c => setReceiptClient(c)); return; }
+  if (r._isNew && !r._fromInvoice && r._linkChoice === null && openInvoicesFor(r.clientId).length) { toast('Is this payment for one of their invoices? Choose one, or “No”.', { error: true }); return; }
+  if (!validateAmount(true)) { $('#r-amt').focus(); return; }
   const inv = r.linkedInvoiceId && findDoc(r.linkedInvoiceId);
   if (r._isNew && inv) {
     const same = paymentsFor(inv).find(p => receiptCents(p) === toCents(r.amount) && p.issueDate === r.issueDate && (!r.reference || !p.reference || p.reference === r.reference));
     if (same && !(await confirmDialog({ title: 'This looks like a duplicate', message: `${same.number} already records ${money(receiptAmount(same), r.currency)} on ${fmtDate(same.issueDate)} for ${inv.number}. Record another payment anyway?`, ok: 'Record anyway', cancel: 'Go back' }))) return;
   }
-  savingReceipt = true;
+  savingReceipt = true; if (btn) btn.classList.add('loading');
   try {
-    let client = r.clientId && findClient(r.clientId);
-    if (!client && r.client.name) {
-      const dup = findDuplicateClient(r.client);
-      if (dup && await confirmDialog({ title: `Use existing client ${dup.name}?`, message: 'A client with matching details already exists. Link this receipt to them instead of creating a duplicate.', ok: `Use ${dup.name}`, cancel: 'Create new' })) client = dup;
-      if (!client) client = putClient({ id: uid(), name: r.client.name.trim(), email: (r.client.email || '').trim(), phone: (r.client.phone || '').trim(), address: (r.client.address || '').trim(), notes: '', createdAt: Date.now() }, true);
-    } else if (client && r._cmode === 'edit' && r._updateClient !== false) {
-      putClient({ ...client, name: r.client.name || client.name, email: (r.client.email || '').trim(), phone: (r.client.phone || '').trim(), address: (r.client.address || '').trim() }, true);
+    if (r._isNew) {
+      const res = await claimNumber('receipt', r.id, r._numberCustom ? String(r.number).trim() : undefined);
+      if (res.taken) { toast(`${r.number} is already used. Change it in More options.`, { error: true }); return; }
+      r.number = res.number;
     }
-    const clean = { ...r, clientId: client ? client.id : r.clientId || null, amount: fromCents(toCents(r.amount)), invoiceNumber: inv ? inv.number : r.invoiceNumber || '' };
-    if (r._mode === 'standalone') { clean.linkedInvoiceId = null; clean.invoiceNumber = ''; }
-    if (client && !r.client.name) clean.client = { name: client.name, email: client.email || '', phone: client.phone || '', address: client.address || '' };
+    const client = r.clientId && findClient(r.clientId);
+    const clean = { ...r, amount: fromCents(toCents(r.amount)), invoiceNumber: inv ? inv.number : r.invoiceNumber || '', client: client ? snap({ ...client, ...r.client }) : { ...blankClient(), ...r.client }, biz: r.biz || snapshotBiz() };
+    if (!clean.description && inv) clean.description = `Invoice ${inv.number}`;
     Object.keys(clean).filter(k => k.startsWith('_')).forEach(k => delete clean[k]);
     putDoc(clean);
     dirty = false; draft = null;
-    const after = inv && balances(findDoc(inv.id));
-    toast(inv ? `${clean.number} saved. ${inv.number} is now ${STATUS[invoiceStatus(findDoc(inv.id))].toLowerCase()}${after.balanceCents ? `, ${money(after.balance, inv.currency)} left` : ''}.` : `${clean.number} saved`);
+    const after = inv && findDoc(inv.id);
+    toast(inv ? `Receipt ${clean.number} saved. ${balances(after).balanceCents ? `${money(balances(after).balance, inv.currency)} still owed on ${inv.number}.` : `${inv.number} is fully paid.`}` : `Receipt ${clean.number} saved`);
     location.replace(`#/receipts/${clean.id}`);
-  } finally { savingReceipt = false; }
+  } finally { savingReceipt = false; if (btn && btn.isConnected) btn.classList.remove('loading'); }
+}
+function setReceiptClient(c) {
+  const r = draft;
+  r.clientId = c.id; r.client = snap(c);
+  const open = openInvoicesFor(c.id);
+  r.linkedInvoiceId = null; r.invoiceNumber = ''; r._linkChoice = open.length ? null : 'none';
+  if (open.length === 0 && !r.description) r.description = '';
+  dirty = true; renderReceiptForm();
+}
+
+/* =====================================================================
+   Receipts
+   ===================================================================== */
+function filteredReceipts() {
+  const st = LS.receipts, q = st.q.trim().toLowerCase(), range = periodRange(st.period, st);
+  const list = receipts().filter(r => (st.period === 'all' || inRange(r.issueDate, range)) && (!st.client || r.clientId === st.client)
+    && (!q || [r.number, r.client && r.client.name, r.reference, r.description, r.invoiceNumber].join(' ').toLowerCase().includes(q)));
+  return sortBy(list, st.sort, st.dir, (r, k) => k === 'amount' ? receiptCents(r) : k === 'client' ? clientName(r).toLowerCase() : r[k] || '');
+}
+function viewReceipts() {
+  return {
+    topbar: { crumbs: [['Receipts']], actions: `<a class="btn btn-primary btn-sm hide-sm" href="#/receipts/new">${ic('plus')}New receipt</a>` },
+    html: `<div class="content narrow-content">
+      ${pageHead('Receipts', '', `<a class="btn btn-primary" href="#/receipts/new">${ic('plus')}New receipt</a>`)}
+      ${listToolbar('receipts')}
+      <div id="list-body">${listBodyHTML('receipts')}</div>
+    </div><a class="btn btn-primary fab" href="#/receipts/new">${ic('plus')}New receipt</a>`,
+    mount: bindListSearch
+  };
+}
+function viewReceipt(id) {
+  const r = findDoc(id);
+  if (!r || r.type !== 'receipt') return notFound('Receipt', '#/receipts');
+  const inv = r.linkedInvoiceId && findDoc(r.linkedInvoiceId), b = inv && balances(inv);
+  return {
+    topbar: { crumbs: [['Receipts', '#/receipts'], [r.number]], back: '#/receipts', actions: `<button class="icon-btn" data-act="doc-menu" data-id="${r.id}" data-detail="1" aria-label="More actions">${ic('more')}</button>` },
+    html: `<div class="detail">
+      <div class="workspace ws-scroll hide-sm-block"><div class="ws-bar"><span>${isVoid(r) ? 'Void receipt' : 'Receipt'}</span><span id="pg-count"></span></div><div id="preview" style="max-width:820px;margin:0 auto"></div></div>
+      <aside class="side" aria-label="Receipt summary">
+        <div class="side-sec summary">
+          <div class="sum-top"><a class="sum-client" href="${r.clientId ? '#/clients/' + r.clientId : '#/clients'}">${esc(clientName(r))}</a>${isVoid(r) ? badge(r) : '<span class="badge paid">Received</span>'}</div>
+          <div class="big-amt num" ${isVoid(r) ? 'style="text-decoration:line-through;color:var(--text-3)"' : ''}><span class="cur">${esc(r.currency)}</span>${esc(plainAmount(receiptAmount(r)))}</div>
+          <div class="sum-due">${esc(fmtDate(r.issueDate))}, ${esc(r.paymentMethod || '')}${r.description ? `<br>${esc(r.description)}` : ''}</div>
+          ${isVoid(r) ? `<p class="small" style="color:var(--red);margin:8px 0 0">Voided ${esc(fmtDate(r.voidedAt.slice(0, 10)))}${r.voidReason ? `: ${esc(r.voidReason)}` : ''}</p>` : ''}
+        </div>
+        <div class="side-sec actions-sec">
+          <button class="btn btn-primary btn-lg btn-block" data-act="share" data-id="${r.id}">${ic('share')}Send receipt</button>
+          <div class="act-row">
+            <button class="act" data-act="dl" data-id="${r.id}">${ic('download')}PDF</button>
+            <button class="act show-sm-flex" data-act="view-doc" data-id="${r.id}">${ic('eye')}View</button>
+            <button class="act hide-sm-flex" data-act="print" data-id="${r.id}">${ic('print')}Print</button>
+            <a class="act" href="#/receipts/${r.id}/edit">${ic('edit')}Edit</a>
+          </div>
+        </div>
+        ${inv ? `<div class="side-sec"><h3>Invoice ${esc(inv.number)}</h3>
+          <div class="kv"><span>Invoice total</span><b>${esc(money(b.total, inv.currency))}</b></div>
+          <div class="kv"><span>Paid so far</span><b>${esc(money(b.paid, inv.currency))}</b></div>
+          <div class="kv"><span>Still owed</span><b>${b.balanceCents ? esc(money(b.balance, inv.currency)) : 'Nothing, fully paid'}</b></div>
+          <a class="link" href="#/invoices/${inv.id}" style="display:inline-block;margin-top:8px">Open invoice</a></div>`
+          : r.invoiceNumber ? `<div class="side-sec"><p class="muted small" style="margin:0">Invoice ${esc(r.invoiceNumber)} was deleted. This receipt is kept as a record.</p></div>` : ''}
+        <details class="side-sec disclosure"><summary>Receipt details</summary>
+          <div class="kv"><span>Number</span><b>${esc(r.number)}</b></div>
+          ${r.reference ? `<div class="kv"><span>Reference</span><b>${esc(r.reference)}</b></div>` : ''}
+          <div class="kv"><span>Currency</span><b>${esc(r.currency)}</b></div>
+          ${isVoid(r) ? `<button class="btn btn-secondary btn-sm" data-act="rc-restore" data-id="${r.id}" style="margin-top:10px">${ic('sync')}Restore receipt</button>` : `<button class="btn btn-ghost btn-sm danger-text" data-act="rc-void" data-id="${r.id}" style="margin-top:10px;padding-left:0">${ic('ban')}Void this receipt</button>`}
+        </details>
+      </aside>
+    </div>`,
+    mount(el) { const p = $('#preview', el); if (p && !isPhone()) { const n = renderPreview(p, r); $('#pg-count', el).textContent = plural(n, 'page'); } }
+  };
 }
 
 /* =====================================================================
    Clients
    ===================================================================== */
-const CL_COLS = 'minmax(0,1.6fr) minmax(0,1.2fr) 130px 130px 130px 34px';
-function clientTableHTML() {
-  if (loadingData()) return `<div class="tbl">${skeletonRows(8)}</div>`;
-  if (!DB.clients.length) return emptyHTML('users', 'No clients yet', 'Clients are saved automatically from invoices and receipts, or add one now.', '<button class="btn btn-primary" data-act="client-new">Add client</button>');
-  const st = LS.clients, q = st.q.trim().toLowerCase();
-  const rows = DB.clients.filter(c => !q || [c.name, c.email, c.phone, c.address].join(' ').toLowerCase().includes(q)).map(c => ({ c, s: clientSummary(c) }));
-  const sorted = sortBy(rows, st.sort, st.dir, (x, k) => k === 'name' ? x.c.name.toLowerCase() : x.s[k]);
-  const page = pageSlice('clients', sorted), cur = S().currency;
-  return `<div class="tbl" role="table">
-    <div class="tbl-row tbl-head" style="--cols:${CL_COLS}">${sortBtn('clients', 'name', 'Client')}<span>Contact</span><span class="r">${sortBtn('clients', 'invoiced', 'Invoiced')}</span><span class="r">${sortBtn('clients', 'paid', 'Paid')}</span><span class="r">${sortBtn('clients', 'outstanding', 'Outstanding')}</span><span></span></div>
-    <div class="tbl-body">${page.length ? page.map(({ c, s }) => `<div class="tbl-row" style="--cols:${CL_COLS}" data-href="#/clients/${c.id}" tabindex="0" role="link">
-      <div style="display:flex;align-items:center;gap:10px;min-width:0" data-m="a"><span class="avatar">${esc(initials(c.name))}</span><div class="cell-2"><span class="cell-main">${esc(c.name)}</span><span class="cell-sub">${plural(s.invoices.length, 'invoice')}</span></div></div>
-      <div class="cell-2" data-m="c"><span class="t2">${esc(c.phone || '—')}</span><span class="cell-sub">${esc(c.email || '')}</span></div>
-      <span class="amount r">${esc(money(s.invoiced, cur))}</span>
-      <span class="amount r">${esc(money(s.paid, cur))}</span>
-      <span class="amount r" data-m="b" ${s.outstanding ? '' : 'style="color:var(--text-3)"'}>${esc(money(s.outstanding, cur))}</span>
-      <button class="icon-btn sm row-menu" data-act="client-menu" data-id="${c.id}" aria-label="Actions for ${esc(c.name)}">${ic('more')}</button>
-    </div>`).join('') : emptyHTML('search', 'No clients match', 'Check the spelling, or add them as a new client.')}</div>
-  </div>${pagerHTML('clients', sorted.length)}`;
+function clientListHTML() {
+  if (loadingData()) return skeletonList(8);
+  if (!DB.clients.length) return emptyHTML('users', 'No clients yet', 'Clients are saved for you when you create an invoice. You can also add one now.', '<button class="btn btn-primary" data-act="client-new">Add client</button>');
+  const q = LS.clients.q.trim().toLowerCase(), cur = S().currency;
+  const list = DB.clients.filter(c => !q || [c.name, c.email, c.phone].join(' ').toLowerCase().includes(q)).sort((a, b) => a.name.localeCompare(b.name));
+  if (!list.length) return emptyHTML('search', 'No client found', 'Check the spelling, or add them as a new client.', '<button class="btn btn-secondary" data-act="client-new">Add client</button>');
+  return `<div class="list-meta">${plural(list.length, 'client')}</div><div class="rows">${list.map(c => {
+    const s = clientSummary(c);
+    return `<a class="row" href="#/clients/${c.id}"><span class="avatar">${esc(initials(c.name))}</span>
+      <span class="row-main"><span class="row-t">${esc(c.name)}</span><span class="row-s">${esc(c.phone || c.email || plural(s.invoices.length, 'invoice'))}</span></span>
+      <span class="row-end">${s.outstanding ? `<span class="row-amt">${esc(money(s.outstanding, cur))}</span><span class="row-s">still owed</span>` : `<span class="row-s">Nothing owed</span>`}</span></a>`;
+  }).join('')}</div>`;
 }
 function viewClients() {
   if (current.query.new) setTimeout(() => clientDialog(), 50);
   return {
-    title: 'Clients',
     topbar: { crumbs: [['Clients']], actions: `<button class="btn btn-primary btn-sm hide-sm" data-act="client-new">${ic('plus')}Add client</button>` },
-    html: `<div class="content">
-      ${pageHead('Clients', 'People and businesses you bill, with what they owe.', `<button class="btn btn-primary" data-act="client-new">${ic('plus')}Add client</button>`)}
-      <section class="card">
-        <div class="toolbar"><div class="input-affix grow">${ic('search')}<input class="input" id="list-q" data-list="clients" type="search" placeholder="Search name, phone or email" value="${esc(LS.clients.q)}" autocomplete="off"></div></div>
-        <div id="list-body">${clientTableHTML()}</div>
-      </section>
+    html: `<div class="content narrow-content">
+      ${pageHead('Clients', '', `<button class="btn btn-primary" data-act="client-new">${ic('plus')}Add client</button>`)}
+      <div class="list-tools"><div class="input-affix grow">${ic('search')}<input class="input" id="list-q" data-list="clients" type="search" placeholder="Search name or phone" value="${esc(LS.clients.q)}" autocomplete="off"></div></div>
+      <div id="list-body">${clientListHTML()}</div>
     </div><button class="btn btn-primary fab" data-act="client-new">${ic('plus')}Add client</button>`,
-    mount: bindListControls
+    mount: bindListSearch
   };
 }
+let clientTab = 'invoices';
+function viewClient(id) {
+  const c = findClient(id); if (!c) return notFound('Client', '#/clients');
+  const s = clientSummary(c), cur = S().currency;
+  const list = (clientTab === 'invoices' ? s.invoices : s.receipts).sort(byDateDesc);
+  return {
+    topbar: { crumbs: [['Clients', '#/clients'], [c.name]], back: '#/clients', actions: `<button class="icon-btn" data-act="client-menu" data-id="${c.id}" data-detail="1" aria-label="More">${ic('more')}</button>` },
+    html: `<div class="content narrow-content">
+      <div class="profile-head"><span class="avatar">${esc(initials(c.name))}</span><div style="min-width:0"><h1 class="ellipsis">${esc(c.name)}</h1><p>${esc(c.phone || c.email || 'No contact details')}</p></div></div>
+      <section class="stats three" style="margin-top:20px">
+        <div class="stat"><span class="stat-l">Still owed</span><span class="stat-v num">${moneyHTML(s.outstanding, cur)}</span></div>
+        <div class="stat"><span class="stat-l">Paid</span><span class="stat-v num">${moneyHTML(s.paid, cur)}</span></div>
+        <div class="stat"><span class="stat-l">Invoiced</span><span class="stat-v num">${moneyHTML(s.invoiced, cur)}</span></div>
+      </section>
+      <div class="home-actions">
+        <a class="btn btn-primary btn-lg" href="#/invoices/new?client=${c.id}">${ic('plus')}New invoice</a>
+        <a class="btn btn-secondary btn-lg" href="#/receipts/new?client=${c.id}">${ic('receipt')}Record payment</a>
+      </div>
+      <details class="disclosure card-ish"><summary>Contact details</summary>
+        <div class="kv"><span>Phone</span><b>${esc(c.phone || '—')}</b></div><div class="kv"><span>Email</span><b>${esc(c.email || '—')}</b></div>
+        <div class="kv"><span>Address</span><b style="white-space:pre-line">${esc(c.address || '—')}</b></div>
+        ${c.notes ? `<div class="kv"><span>Notes</span><b style="white-space:pre-line;font-weight:400">${esc(c.notes)}</b></div>` : ''}
+        <button class="btn btn-secondary btn-sm" data-act="client-edit" data-id="${c.id}" style="margin-top:10px">${ic('edit')}Edit details</button>
+      </details>
+      <section class="sec">
+        <div class="sec-h"><div class="seg">${[['invoices', `Invoices (${s.invoices.length})`], ['payments', `Payments (${s.receipts.length})`]].map(([k, l]) => `<button data-act="client-tab" data-k="${k}" class="${clientTab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        ${list.length ? rowsHTML(list) : emptyHTML(clientTab === 'invoices' ? 'invoice' : 'receipt', clientTab === 'invoices' ? 'No invoices yet' : 'No payments yet', clientTab === 'invoices' ? 'Invoices for this client will show here.' : 'Payments from this client will show here.')}
+      </section>
+    </div>`
+  };
+}
+
+/* =====================================================================
+   Saved items (products & services)
+   ===================================================================== */
+function itemsListHTML() {
+  const list = [...DB.products].sort((a, b) => a.name.localeCompare(b.name));
+  if (!list.length) return emptyHTML('box', 'No saved items yet', 'Save the things you charge for often, like a bridal fitting or alterations, so you can add them to an invoice in one tap.', '<button class="btn btn-primary" data-act="product-new">Add an item</button>');
+  return `<div class="rows">${list.map(p => `<button class="row" data-act="product-edit" data-id="${p.id}"><span class="row-ic">${ic('box')}</span>
+    <span class="row-main"><span class="row-t">${esc(p.name)}</span><span class="row-s">${esc(p.description || 'No description')}</span></span>
+    <span class="row-end"><span class="row-amt">${esc(money(num(p.price), p.currency || S().currency))}</span></span></button>`).join('')}</div>`;
+}
+function viewItems() {
+  return {
+    topbar: { crumbs: [['Saved items']], back: isPhone() ? '#/settings' : '', actions: `<button class="btn btn-primary btn-sm hide-sm" data-act="product-new">${ic('plus')}Add item</button>` },
+    html: `<div class="content narrow-content">${pageHead('Saved items', 'Things you charge for often. Pick them when adding items to an invoice.', `<button class="btn btn-primary" data-act="product-new">${ic('plus')}Add item</button>`)}${itemsListHTML()}</div>
+      <button class="btn btn-primary fab" data-act="product-new">${ic('plus')}Add item</button>`
+  };
+}
+
+/* =====================================================================
+   Settings: set once, used everywhere. An index on phones, a side menu on desktop.
+   ===================================================================== */
+const SET_SECTIONS = [
+  ['business', 'Your business', 'Name, logo and contact details', 'user'],
+  ['invoices', 'Invoices and receipts', 'Currency, payment terms, tax and numbering', 'invoice'],
+  ['content', 'What your invoices say', 'Payment details, thank-you note, terms', 'wallet'],
+  ['items', 'Saved items', 'Things you charge for often', 'box'],
+  ['appearance', 'Appearance', 'Light or dark', 'sun'],
+  ['data', 'Backup and data', 'Export, restore, lock', 'lock']
+];
+function sampleDoc(tpl) {
+  const s = S();
+  return { id: 'sample', type: 'invoice', template: tpl, number: formatNumber('invoice', 42), status: 'issued', issueDate: todayISO(), dueDate: addDays(todayISO(), 14), currency: s.currency, client: { name: 'Ama Mensah', address: 'East Legon, Accra', phone: '024 555 1234', email: '' }, items: [{ desc: 'Custom kaba and slit', qty: 1, price: 1450 }, { desc: 'Alterations', qty: 2, price: 120 }], discount: 0, taxRate: 0, notes: '', showPayment: true };
+}
+function viewSettings(tab) {
+  const phoneIndex = !tab && isPhone();
+  if (!tab) tab = 'business';
+  if (tab === 'items') { const v = viewItems(); v.topbar.back = '#/settings'; return v; }
+  if (!SET_SECTIONS.some(t => t[0] === tab)) tab = 'business';
+  if (phoneIndex) return {
+    topbar: { crumbs: [['Settings']] },
+    html: `<div class="content narrow-content">${pageHead('Settings', 'Set these once. Every new invoice and receipt uses them.')}
+      <div class="rows">${SET_SECTIONS.map(([k, l, d, i]) => `<a class="row" href="#/settings/${k}"><span class="row-ic">${ic(i)}</span><span class="row-main"><span class="row-t">${l}</span><span class="row-s">${d}</span></span>${ic('chevRight', 'chev')}</a>`).join('')}</div>
+      <a class="row plain" href="#/reports" style="margin-top:16px"><span class="row-ic">${ic('chart')}</span><span class="row-main"><span class="row-t">Reports</span><span class="row-s">Trends, late payments, client totals</span></span>${ic('chevRight', 'chev')}</a>
+    </div>`
+  };
+  const s = S();
+  const fld = (k, label, o = {}) => `<div class="field"><label for="s-${k}">${label}</label>${o.area ? `<textarea class="input" id="s-${k}" data-s="${k}" rows="${o.rows || 3}" placeholder="${esc(o.ph || '')}">${esc(s[k] ?? '')}</textarea>` : `<input class="input${o.num ? ' num' : ''}" id="s-${k}" data-s="${k}" value="${esc(s[k] ?? '')}" placeholder="${esc(o.ph || '')}"${o.type ? ` type="${o.type}"` : ''}${o.im ? ` inputmode="${o.im}"` : ''}>`}${o.hint ? `<div class="hint">${o.hint}</div>` : ''}</div>`;
+  const sel = (k, label, opts, hint) => `<div class="field"><label for="s-${k}">${label}</label><select class="input" id="s-${k}" data-s="${k}">${opts.map(([v, l]) => `<option value="${v}"${String(s[k]) === String(v) ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+  let body = '';
+  if (tab === 'business') body = `
+    <div class="field"><label>Logo</label><div class="logo-drop"><div class="logo-box">${s.logo === 'none' ? `<span class="muted small">No logo</span>` : `<img src="${s.logo || LOGO}" alt="Logo">`}</div>
+      <div style="display:grid;gap:6px;justify-items:start"><button class="btn btn-secondary btn-sm" data-act="logo-upload">${ic('upload')}Upload logo</button>
+      ${s.logo ? '<button class="link small" data-act="logo-reset">Use the Kuzelle logo</button>' : ''}${s.logo !== 'none' ? '<button class="link small" data-act="logo-none">Show my business name instead</button>' : ''}</div></div></div>
+    ${fld('businessName', 'Business name')}
+    <div class="grid-2">${fld('phone', 'Phone', { im: 'tel', ph: '024 000 0000' })}${fld('email', 'Email', { type: 'email', ph: 'hello@kuzelle.com' })}</div>
+    ${fld('address', 'Address', { area: true, rows: 2 })}
+    <details class="disclosure inline"><summary>Website and tax number</summary><div class="form-stack" style="margin-top:12px">
+      ${fld('website', 'Website or social page', { ph: 'kuzelle.com or @kuzelle' })}${fld('taxId', 'Tax identification number', { ph: 'e.g. your GRA TIN', hint: 'Shown on documents only if you fill it in.' })}</div></details>`;
+  if (tab === 'invoices') body = `
+    ${sel('currency', 'Currency', CURRENCIES.map(([c, n]) => [c, `${c}, ${n}`]), 'New invoices and receipts start in this currency. You can still change it on any invoice.')}
+    ${sel('dueDays', 'When invoices are due', TERMS.filter(t => t[0] !== 'custom').map(([k, l]) => [k, l === 'Due on receipt' ? 'Straight away' : `${l.replace('Net ', '')} days after the invoice date`]), 'The due date is worked out for you.')}
+    ${sel('defaultMethod', 'Usual payment method', METHODS.map(m => [m, m]), 'Pre-selected on new receipts.')}
+    <div class="field"><label>Tax</label><div class="grid-2">${fld('taxRate', 'Rate (%)', { im: 'decimal', num: true, hint: 'Leave at 0 if you don’t charge tax.' })}${fld('taxLabel', 'Name on invoices', { ph: 'VAT' })}</div></div>
+    <div class="field"><label>Look of your invoices</label><div class="tpl-pick">${['classic', 'modern', 'minimal'].map(t => `<button class="tpl-opt ${s.template === t ? 'on' : ''}" data-act="set-tpl" data-k="${t}" type="button"><div class="thumb">${paginate(sampleDoc(t))[0].replace('class="page', 'style="transform:scale(.2)" class="page')}</div><b>${t[0].toUpperCase() + t.slice(1)}</b></button>`).join('')}</div></div>
+    <details class="disclosure inline"><summary>Numbering</summary><div class="form-stack" style="margin-top:12px">
+      <p class="muted small" style="margin:0">Numbers are given out automatically and never repeat. Next invoice: <b id="next-inv">${esc(nextNumber('invoice'))}</b>, next receipt: <b id="next-rct">${esc(nextNumber('receipt'))}</b></p>
+      <div class="grid-2">${fld('invPrefix', 'Invoice prefix', { hint: 'Add {YYYY} for the year, e.g. INV-{YYYY}-' })}${fld('nextInv', 'Start invoices at', { im: 'numeric', num: true })}</div>
+      <div class="grid-2">${fld('rctPrefix', 'Receipt prefix')}${fld('nextRct', 'Start receipts at', { im: 'numeric', num: true })}</div>
+      ${fld('numberDigits', 'Digits in the number', { im: 'numeric', num: true, hint: '4 gives 0001' })}</div></details>`;
+  if (tab === 'content') body = `
+    ${fld('payment', 'How clients can pay you', { area: true, rows: 4, ph: 'MTN MoMo: 024 000 0000 (Kuzelle)\nBank: GCB Bank, Accra Main\nAccount name: Kuzelle\nAccount number: 0000000000000', hint: 'Mobile money and bank details. Printed under “How to pay”.' })}
+    <label class="checkbox"><input type="checkbox" data-s="showPayment"${s.showPayment !== false ? ' checked' : ''}>Put these details on every new invoice</label>
+    ${fld('footer', 'Thank-you line', { ph: 'Thank you for choosing Kuzelle.', hint: 'The last line on every invoice and receipt.' })}
+    <details class="disclosure inline"><summary>Notes and terms</summary><div class="form-stack" style="margin-top:12px">
+      ${fld('defaultNotes', 'Note added to new invoices', { area: true, rows: 2 })}
+      ${fld('defaultTerms', 'Terms and conditions', { area: true, rows: 3, ph: 'e.g. 50% deposit before work begins. Balance on collection.' })}
+      ${fld('countryCode', 'WhatsApp country code', { im: 'numeric', hint: 'Turns numbers like 024… into WhatsApp links. 233 for Ghana.' })}</div></details>
+    <p class="muted small">Invoices you’ve already created keep the details they were issued with.</p>`;
+  if (tab === 'appearance') body = `
+    <div class="field"><label>Theme</label><div class="seg full">${[['system', 'Automatic', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([k, l, i]) => `<button data-act="set-theme" data-theme-opt="${k}" data-k="${k}" class="${(UI.theme || 'system') === k ? 'on' : ''}">${ic(i)}${l}</button>`).join('')}</div><div class="hint">Invoices and receipts always print on white.</div></div>`;
+  if (tab === 'data') body = `
+    <div class="field"><label>Where your records are kept</label><p class="small" style="margin:0">${MODE === 'cloud' ? 'Online, in your Netlify database. Every device you sign in on sees the same records, and this device keeps a copy for when you’re offline.' : 'In this browser only.'}</p>
+      <div class="sync-pill" data-sync style="padding:0;height:auto;margin-top:8px"><span class="sdot"></span><span class="stxt"></span></div>
+      ${MODE === 'cloud' ? `<button class="btn btn-secondary btn-sm" data-act="sync-now" style="margin-top:8px;justify-self:start">${ic('sync')}Save online now</button>` : ''}</div>
+    <div class="field"><label>Backup</label><p class="small muted" style="margin:0">Last backup: ${UI.lastBackup ? esc(new Date(UI.lastBackup).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'never'}</p>
+      <div class="btn-row"><button class="btn btn-secondary" data-act="backup">${ic('download')}Download a backup</button><button class="btn btn-secondary" data-act="import">${ic('upload')}Restore a backup</button></div></div>
+    <details class="disclosure inline"><summary>Spreadsheets and more</summary><div class="form-stack" style="margin-top:12px">
+      <div class="btn-row"><button class="btn btn-secondary btn-sm" data-act="export-csv" data-k="invoices">Invoices (CSV)</button><button class="btn btn-secondary btn-sm" data-act="export-csv" data-k="receipts">Receipts (CSV)</button><button class="btn btn-secondary btn-sm" data-act="export-csv" data-k="clients">Clients (CSV)</button></div>
+      <div><button class="btn btn-danger-soft btn-sm" data-act="wipe">${ic('trash')}Erase all data</button><div class="hint" style="margin-top:6px">Deletes everything${MODE === 'cloud' ? ' on every device' : ''}. Download a backup first.</div></div></div></details>
+    <div class="field"><label>This device</label><button class="btn btn-secondary" data-act="lock" style="justify-self:start">${ic('lock')}Lock the app</button><div class="hint">The access code is set in Netlify.</div></div>`;
+  const sec = SET_SECTIONS.find(t => t[0] === tab);
+  return {
+    topbar: { crumbs: [['Settings', '#/settings'], [sec[1]]], back: isPhone() ? '#/settings' : '' },
+    html: `<div class="content">
+      <div class="settings">
+        <nav class="settings-nav hide-sm" aria-label="Settings sections">${SET_SECTIONS.map(([k, l, , i]) => `<a class="nav-link ${k === tab ? 'active' : ''}" href="#/settings/${k}">${ic(i)}<span>${l}</span></a>`).join('')}</nav>
+        <div class="set-body">${pageHead(sec[1], tab === 'appearance' || tab === 'data' ? '' : 'Saved automatically.')}<div class="form-stack">${body}</div></div>
+      </div>
+    </div>`,
+    mount(el) {
+      const NUMS = ['taxRate', 'dueDays', 'nextInv', 'nextRct', 'numberDigits'];
+      const save = debounce(() => putSettings(), 400);
+      const h = e => {
+        const k = e.target.dataset.s; if (!k) return;
+        let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+        if (NUMS.includes(k)) v = k === 'taxRate' ? Math.max(0, num(v)) : k === 'dueDays' ? Math.max(0, Math.floor(num(v))) : Math.max(1, Math.floor(num(v)) || 1);
+        if (k === 'numberDigits') v = Math.min(8, v);
+        S()[k] = v; save();
+        const ni = $('#next-inv', el), nr = $('#next-rct', el);
+        if (ni) ni.textContent = nextNumber('invoice'); if (nr) nr.textContent = nextNumber('receipt');
+        if (k === 'businessName') paintAccount();
+      };
+      el.addEventListener('input', h);
+      el.addEventListener('change', e => { if (e.target.tagName === 'SELECT' || e.target.type === 'checkbox') h(e); });
+    }
+  };
+}
+
+/* =====================================================================
+   Client and item dialogs
+   ===================================================================== */
 function clientDialog(id, onSaved) {
   const c = id ? findClient(id) : { name: '', email: '', phone: '', address: '', notes: '' };
   if (!c) return;
@@ -1243,71 +1326,6 @@ async function deleteClient(c) {
   delClient(c.id); toast(`${c.name} deleted`);
   if (current.name === 'clients' && current.parts[0]) go('#/clients'); else refreshView();
 }
-let clientTab = 'invoices';
-function viewClient(id) {
-  const c = findClient(id); if (!c) return notFound('Client', '#/clients');
-  const s = clientSummary(c), cur = S().currency;
-  const invs = s.invoices.sort(byDateDesc), rcs = s.receipts.sort(byDateDesc);
-  const ICOLS = '110px 92px 92px 124px 124px 128px 34px';
-  return {
-    title: c.name,
-    topbar: { crumbs: [['Clients', '#/clients'], [c.name]], actions: `<button class="btn btn-secondary btn-sm hide-sm" data-act="client-edit" data-id="${c.id}">${ic('edit')}Edit</button>` },
-    html: `<div class="content stack">
-      <div class="page-head" style="margin-bottom:0;align-items:center">
-        <div class="profile-head"><span class="avatar">${esc(initials(c.name))}</span><div><h1>${esc(c.name)}</h1><p>${esc([c.phone, c.email].filter(Boolean).join('  ') || 'No contact details')}</p></div></div>
-        <div class="page-actions" style="display:flex">
-          <button class="icon-btn bordered" data-act="client-menu" data-id="${c.id}" data-detail="1" aria-label="More">${ic('more')}</button>
-          <a class="btn btn-secondary" href="#/receipts/new?client=${c.id}&mode=standalone">${ic('receipt')}Receipt</a>
-          <a class="btn btn-primary" href="#/invoices/new?client=${c.id}">${ic('plus')}Invoice</a>
-        </div>
-      </div>
-      <section class="kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))">
-        <div class="kpi"><div class="k-label">Total invoiced</div><div class="k-value num">${moneyHTML(s.invoiced, cur)}</div></div>
-        <div class="kpi"><div class="k-label">Total paid</div><div class="k-value num">${moneyHTML(s.paid, cur)}</div></div>
-        <div class="kpi ${s.outstanding ? '' : ''}"><div class="k-label">Outstanding</div><div class="k-value num">${moneyHTML(s.outstanding, cur)}</div></div>
-        <div class="kpi"><div class="k-label">Last payment</div><div class="k-value" style="font-size:18px">${s.lastPay ? esc(fmtDate(s.lastPay)) : '—'}</div></div>
-      </section>
-      <section class="card">
-        <div class="tabs" role="tablist">
-          <button class="tab ${clientTab === 'invoices' ? 'on' : ''}" data-act="client-tab" data-k="invoices">Invoices <span class="n">${invs.length}</span></button>
-          <button class="tab ${clientTab === 'payments' ? 'on' : ''}" data-act="client-tab" data-k="payments">Payments <span class="n">${rcs.length}</span></button>
-          <button class="tab ${clientTab === 'details' ? 'on' : ''}" data-act="client-tab" data-k="details">Details</button>
-        </div>
-        ${clientTab === 'invoices' ? (invs.length ? `<div class="tbl"><div class="tbl-row tbl-head" style="--cols:${ICOLS}"><span>Number</span><span>Issued</span><span>Due</span><span class="r">Amount</span><span class="r">Balance</span><span>Status</span><span></span></div><div class="tbl-body">${invs.map(d => {
-            const b = balances(d); return `<div class="tbl-row" style="--cols:${ICOLS}" data-href="#/invoices/${d.id}" tabindex="0" role="link"><span class="cell-main num" data-m="a">${esc(d.number)}</span><span class="t2">${esc(fmtShort(d.issueDate))}</span><span class="t2" data-m="c">Due ${esc(fmtShort(d.dueDate))}</span><span class="amount r" data-m="b">${esc(money(b.total, d.currency))}</span><span class="amount r">${esc(money(b.balance, d.currency))}</span><span data-m="d">${badge(d)}</span><button class="icon-btn sm row-menu" data-act="doc-menu" data-id="${d.id}" aria-label="Actions">${ic('more')}</button></div>`; }).join('')}</div></div>`
-          : emptyHTML('invoice', 'No invoices for this client', 'Create one and it will show here.', `<a class="btn btn-secondary btn-sm" href="#/invoices/new?client=${c.id}">New invoice</a>`))
-        : clientTab === 'payments' ? (rcs.length ? `<div class="tbl"><div class="tbl-row tbl-head" style="--cols:${RC_COLS}"><span>Number</span><span>Received from</span><span>Date</span><span>Invoice</span><span class="r">Amount</span><span>Method</span><span></span></div><div class="tbl-body">${rcs.map(receiptRow).join('')}</div></div>`
-          : emptyHTML('receipt', 'No payments yet', 'Payments recorded for this client will show here.'))
-        : `<div class="card-body" style="display:grid;gap:4px;max-width:560px">
-            <div class="kv"><span>Phone</span><b>${esc(c.phone || '—')}</b></div><div class="kv"><span>Email</span><b>${esc(c.email || '—')}</b></div>
-            <div class="kv"><span>Billing address</span><b style="white-space:pre-line">${esc(c.address || '—')}</b></div>
-            <div class="kv"><span>Notes</span><b style="white-space:pre-line;font-weight:400">${esc(c.notes || '—')}</b></div>
-            <div style="margin-top:12px"><button class="btn btn-secondary btn-sm" data-act="client-edit" data-id="${c.id}">${ic('edit')}Edit details</button></div></div>`}
-      </section>
-    </div>`
-  };
-}
-
-/* =====================================================================
-   Products & services
-   ===================================================================== */
-function viewProducts() {
-  const cols = 'minmax(0,1.3fr) minmax(0,2fr) 140px 34px';
-  const list = [...DB.products].sort((a, b) => a.name.localeCompare(b.name));
-  return {
-    title: 'Products & services',
-    topbar: { crumbs: [['Products & services']], actions: `<button class="btn btn-primary btn-sm hide-sm" data-act="product-new">${ic('plus')}Add item</button>` },
-    html: `<div class="content">
-      ${pageHead('Products & services', 'Things you sell often. Add them to an invoice in one click.', `<button class="btn btn-primary" data-act="product-new">${ic('plus')}Add item</button>`)}
-      <section class="card">${list.length ? `<div class="tbl"><div class="tbl-row tbl-head" style="--cols:${cols}"><span>Name</span><span>Description</span><span class="r">Default price</span><span></span></div>
-        <div class="tbl-body">${list.map(p => `<div class="tbl-row" style="--cols:${cols}" data-act="product-edit" data-id="${p.id}" tabindex="0" role="button">
-          <span class="cell-main" data-m="a">${esc(p.name)}</span><span class="t2 ellipsis" data-m="c">${esc(p.description || '—')}</span>
-          <span class="amount r" data-m="b">${esc(money(num(p.price), p.currency || S().currency))}</span>
-          <button class="icon-btn sm row-menu" data-act="product-menu" data-id="${p.id}" aria-label="Actions">${ic('more')}</button></div>`).join('')}</div></div>`
-        : emptyHTML('box', 'No saved products or services', 'Save the things you sell often, like a bridal fitting or alterations, with a default price.', '<button class="btn btn-primary" data-act="product-new">Add item</button>')}</section>
-    </div><button class="btn btn-primary fab" data-act="product-new">${ic('plus')}Add item</button>`
-  };
-}
 function productDialog(id) {
   const p = id ? DB.products.find(x => x.id === id) : { name: '', description: '', price: '', currency: S().currency };
   if (!p) return;
@@ -1331,6 +1349,7 @@ function productDialog(id) {
     }
   });
 }
+
 
 /* =====================================================================
    Reports
@@ -1359,7 +1378,7 @@ function viewReports() {
   const OC = '110px minmax(0,1.4fr) 100px 110px 130px';
   return {
     title: 'Reports',
-    topbar: { crumbs: [['Reports']] },
+    topbar: { crumbs: [['Reports']], back: isPhone() ? '#/dashboard' : '' },
     html: `<div class="content stack">
       ${pageHead('Reports', `${esc(range.label)}${RP.period === 'all' ? '' : `, ${esc(fmtDate(range.from))} to ${esc(fmtDate(range.to))}`}. Figures in ${cur}.`, `<button class="btn btn-secondary" data-act="export-csv" data-k="report">${ic('download')}Export CSV</button>`)}
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:-6px">
@@ -1369,18 +1388,18 @@ function viewReports() {
       <section class="kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))">
         <div class="kpi"><div class="k-label">Invoiced</div><div class="k-value num">${moneyHTML(ag.invoiced, cur)}</div><div class="k-sub">${plural(ag.invoicedCount, 'invoice')}</div></div>
         <div class="kpi"><div class="k-label">Payments received</div><div class="k-value num">${moneyHTML(ag.received, cur)}</div><div class="k-sub">${ag.invoiced ? `${rate}% of amount invoiced` : plural(ag.payments.length, 'payment')}</div></div>
-        <div class="kpi"><div class="k-label">Outstanding today</div><div class="k-value num">${moneyHTML(ag.outstanding, cur)}</div><div class="k-sub">${plural(ag.openCount, 'open invoice')}</div></div>
-        <div class="kpi ${ag.overdueList.length ? 'alert' : ''}"><div class="k-label">Overdue today</div><div class="k-value num">${moneyHTML(ag.overdue, cur)}</div><div class="k-sub">${plural(ag.overdueList.length, 'invoice')}</div></div>
+        <div class="kpi"><div class="k-label">Still owed today</div><div class="k-value num">${moneyHTML(ag.outstanding, cur)}</div><div class="k-sub">${plural(ag.openCount, 'open invoice')}</div></div>
+        <div class="kpi ${ag.overdueList.length ? 'alert' : ''}"><div class="k-label">Late today</div><div class="k-value num">${moneyHTML(ag.overdue, cur)}</div><div class="k-sub">${plural(ag.overdueList.length, 'invoice')}</div></div>
       </section>
       <div class="split-2">
         <section class="card"><div class="card-head"><div><h2>Revenue and payments</h2><div class="sub">By month</div></div>${legend}</div><div class="card-body"><div id="rp-chart"></div></div></section>
-        <section class="card"><div class="card-head"><div><h2>Receivables by age</h2><div class="sub">Open balances, by days past due</div></div></div>
+        <section class="card"><div class="card-head"><div><h2>Money owed, by how late</h2><div class="sub">Open balances, by days past due</div></div></div>
           <div class="card-body" style="display:grid;gap:14px">${buckets.map(b => `<div><div class="kv" style="padding:0 0 6px"><span>${b.l} <span class="muted">(${b.n})</span></span><b>${esc(money(b.v, cur))}</b></div><div class="progress" style="margin:0"><i style="width:${Math.round(b.v / maxB * 100)}%;${b.l === 'Not yet due' ? 'background:var(--chart-b)' : ''}"></i></div></div>`).join('')}</div></section>
       </div>
       <section class="card"><div class="card-head"><div><h2>Client payment summary</h2><div class="sub">Invoiced and paid within the period, outstanding today</div></div></div>
         ${clientRows.length ? `<div class="tbl"><div class="tbl-row tbl-head" style="--cols:${CC}"><span>Client</span><span class="r">Invoiced</span><span class="r">Paid</span><span class="r">Outstanding</span><span class="r">Last payment</span></div><div class="tbl-body">${clientRows.map(x => `<div class="tbl-row" style="--cols:${CC}" data-href="#/clients/${x.c.id}" tabindex="0" role="link"><span class="cell-main" data-m="a">${esc(x.c.name)}</span><span class="amount r">${esc(money(x.invoiced, cur))}</span><span class="amount r" data-m="c">${esc(money(x.paid, cur))} paid</span><span class="amount r" data-m="b">${esc(money(x.owed, cur))}</span><span class="t2 r" data-m="d">${x.last ? esc(fmtShort(x.last)) : '—'}</span></div>`).join('')}</div></div>`
           : emptyHTML('users', 'Nothing in this period', 'Choose a wider date range to see client activity.')}</section>
-      <section class="card"><div class="card-head"><div><h2>Overdue invoices</h2><div class="sub">Oldest first</div></div></div>
+      <section class="card"><div class="card-head"><div><h2>Late payments</h2><div class="sub">Oldest first</div></div></div>
         ${ag.overdueList.length ? `<div class="tbl"><div class="tbl-row tbl-head" style="--cols:${OC}"><span>Invoice</span><span>Client</span><span>Due</span><span>Days late</span><span class="r">Balance</span></div><div class="tbl-body">${[...ag.overdueList].sort((a, b) => a.dueDate.localeCompare(b.dueDate)).map(d => `<div class="tbl-row" style="--cols:${OC}" data-href="#/invoices/${d.id}" tabindex="0" role="link"><span class="cell-main num">${esc(d.number)}</span><span class="cell-main" data-m="a">${esc(clientName(d))}</span><span class="t2">${esc(fmtShort(d.dueDate))}</span><span style="color:var(--red)" data-m="c">${plural(daysBetween(d.dueDate, today), 'day')} late</span><span class="amount r" data-m="b">${esc(money(balances(d).balance, d.currency))}</span></div>`).join('')}</div></div>`
           : emptyHTML('check', 'Nothing overdue', 'Every invoice is paid or still within its terms.')}</section>
     </div>`,
@@ -1392,79 +1411,10 @@ function viewReports() {
   };
 }
 
+
 /* =====================================================================
-   Settings
+   Logo and data tools
    ===================================================================== */
-const SET_TABS = [['business', 'Business profile', 'user'], ['documents', 'Documents', 'invoice'], ['payments', 'Payment details', 'wallet'], ['appearance', 'Appearance', 'sun'], ['data', 'Data and account', 'lock']];
-function sampleDoc(tpl) {
-  const s = S();
-  return { id: 'sample', type: 'invoice', template: tpl, number: formatNumber('invoice', 42), status: 'issued', issueDate: todayISO(), dueDate: addDays(todayISO(), 14), currency: s.currency, client: { name: 'Ama Mensah', address: 'East Legon, Accra', phone: '024 555 1234', email: '' }, items: [{ desc: 'Custom kaba and slit', qty: 1, price: 1450 }, { desc: 'Alterations', qty: 2, price: 120 }], discount: 0, taxRate: 0, notes: '', showPayment: true };
-}
-function viewSettings(tab) {
-  if (!SET_TABS.some(t => t[0] === tab)) tab = 'business';
-  const s = S();
-  const row = (label, help, control) => `<div class="set-row"><div class="lbl"><b>${label}</b>${help ? `<small>${help}</small>` : ''}</div><div>${control}</div></div>`;
-  const inp = (k, o = {}) => o.area ? `<textarea class="input" data-s="${k}" rows="${o.rows || 3}" placeholder="${esc(o.ph || '')}">${esc(s[k] ?? '')}</textarea>` : `<input class="input${o.num ? ' num' : ''}" data-s="${k}" value="${esc(s[k] ?? '')}" placeholder="${esc(o.ph || '')}"${o.type ? ` type="${o.type}"` : ''}${o.im ? ` inputmode="${o.im}"` : ''}${o.w ? ` style="max-width:${o.w}px"` : ''}>`;
-  let body = '';
-  if (tab === 'business') body = `
-    ${row('Logo', 'Shown at the top of every document. PNG or JPG, ideally on a transparent or white background.', `<div class="logo-drop"><div class="logo-box">${s.logo === 'none' ? `<span class="muted" style="font-size:12px">No logo</span>` : `<img src="${s.logo || LOGO}" alt="Logo">`}</div>
-      <div style="display:grid;gap:6px;justify-items:start"><button class="btn btn-secondary btn-sm" data-act="logo-upload">${ic('upload')}Upload logo</button>
-      <div style="display:flex;gap:4px">${s.logo ? '<button class="btn btn-ghost btn-sm" data-act="logo-reset">Use Kuzelle logo</button>' : ''}${s.logo !== 'none' ? '<button class="btn btn-ghost btn-sm" data-act="logo-none">Show name instead</button>' : ''}</div></div></div>`)}
-    ${row('Business name', '', inp('businessName'))}
-    ${row('Contact', 'Printed under “From” on documents.', `<div class="grid-2">${inp('phone', { im: 'tel', ph: 'Phone' })}${inp('email', { type: 'email', ph: 'Email' })}</div>`)}
-    ${row('Address', '', inp('address', { area: true, rows: 2 }))}
-    ${row('Website or social', '', inp('website', { ph: 'kuzelle.com or @kuzelle' }))}
-    ${row('Tax identification number', 'Optional. Your GRA TIN or VAT number, if you have one.', inp('taxId', { ph: 'e.g. P0000000000' }))}`;
-  if (tab === 'documents') body = `
-    ${row('Template', 'The look of every invoice and receipt. You can also switch per document in the editor.', `<div class="tpl-pick">${['classic', 'modern', 'minimal'].map(t => `<button class="tpl-opt ${s.template === t ? 'on' : ''}" data-act="set-tpl" data-k="${t}"><div class="thumb">${paginate(sampleDoc(t))[0].replace('class="page', 'style="transform:scale(.2)" class="page')}</div><b>${t[0].toUpperCase() + t.slice(1)}</b><small>${{ classic: 'Serif headings, ruled lines', modern: 'Bold, shaded table', minimal: 'Light and spacious' }[t]}</small></button>`).join('')}</div>`)}
-    ${row('Default currency', 'New invoices and receipts start in this currency. Dashboard totals use it too.', `<select class="input" data-s="currency" style="max-width:320px">${CURRENCIES.map(([c, n]) => `<option value="${c}"${c === s.currency ? ' selected' : ''}>${c} · ${n}</option>`).join('')}</select>`)}
-    ${row('Invoice numbers', `Next invoice: <b id="next-inv">${esc(nextNumber('invoice'))}</b>`, `<div class="grid-3"><div class="field"><label>Prefix</label>${inp('invPrefix')}</div><div class="field"><label>Start at</label>${inp('nextInv', { im: 'numeric', num: true })}</div><div class="field"><label>Digits</label>${inp('numberDigits', { im: 'numeric', num: true })}</div></div>`)}
-    ${row('Receipt numbers', `Next receipt: <b id="next-rct">${esc(nextNumber('receipt'))}</b>`, `<div class="grid-3"><div class="field"><label>Prefix</label>${inp('rctPrefix')}</div><div class="field"><label>Start at</label>${inp('nextRct', { im: 'numeric', num: true })}</div><div></div></div>`)}
-    ${row('Default payment terms', '', `<select class="input" data-s="dueDays" style="max-width:240px">${TERMS.filter(t => t[0] !== 'custom').map(([k, l]) => `<option value="${k}"${String(s.dueDays) === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`)}
-    ${row('Tax', 'Leave the rate at 0 if you don’t charge tax.', `<div class="grid-2"><div class="field"><label>Name</label>${inp('taxLabel', { ph: 'VAT' })}</div><div class="field"><label>Default rate (%)</label>${inp('taxRate', { im: 'decimal', num: true })}</div></div>`)}
-    ${row('Default notes', 'Added to new invoices.', inp('defaultNotes', { area: true, rows: 2 }))}
-    ${row('Default terms and conditions', '', inp('defaultTerms', { area: true, rows: 3, ph: 'e.g. 50% deposit before work begins. Balance on collection.' }))}
-    ${row('Closing line', 'The last line on every document.', inp('footer'))}`;
-  if (tab === 'payments') body = `
-    ${row('Payment instructions', 'Printed under “How to pay” on invoices.', inp('payment', { area: true, rows: 5, ph: 'MTN MoMo: 024 000 0000 (Kuzelle)\nBank: GCB Bank, Accra Main\nAccount name: Kuzelle\nAccount number: 0000000000000' }))}
-    ${row('Include by default', '', `<label class="checkbox"><input type="checkbox" data-s="showPayment"${s.showPayment !== false ? ' checked' : ''}>Add payment instructions to new invoices</label>`)}
-    ${row('WhatsApp country code', 'Turns local numbers like 024… into WhatsApp links.', inp('countryCode', { im: 'numeric', w: 120 }))}`;
-  if (tab === 'appearance') body = `
-    ${row('Theme', 'Documents always print on white, whatever the app theme.', `<div class="seg">${[['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([k, l, i]) => `<button data-act="set-theme" data-theme-opt="${k}" data-k="${k}" class="${(UI.theme || 'system') === k ? 'on' : ''}">${ic(i)}${l}</button>`).join('')}</div>`)}
-    ${row('Sidebar', '', `<div class="seg">${[['expanded', 'Expanded'], ['collapsed', 'Collapsed']].map(([k, l]) => `<button data-act="set-sidebar" data-k="${k}" class="${(UI.sidebar || (mq('(min-width:1200px)') ? 'expanded' : 'collapsed')) === k ? 'on' : ''}">${l}</button>`).join('')}</div>`)}`;
-  if (tab === 'data') body = `
-    ${row('Storage', MODE === 'cloud' ? 'Saved to your Netlify database and shared by every device you sign in on.' : 'Saved in this browser only.', `<div style="display:grid;gap:8px;justify-items:start"><div class="sync-pill" data-sync style="padding:0;height:auto"><span class="sdot"></span><span class="stxt"></span></div>
-      ${MODE === 'cloud' ? `<button class="btn btn-secondary btn-sm" data-act="sync-now">${ic('sync')}Sync now</button>` : ''}</div>`)}
-    ${row('Backup', `Last export: ${UI.lastBackup ? esc(new Date(UI.lastBackup).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'never'}`, `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" data-act="backup">${ic('download')}Export backup</button><button class="btn btn-secondary btn-sm" data-act="import">${ic('upload')}Restore backup</button></div>`)}
-    ${row('Spreadsheets', 'CSV files that open in Excel or Google Sheets.', `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" data-act="export-csv" data-k="invoices">Invoices</button><button class="btn btn-secondary btn-sm" data-act="export-csv" data-k="receipts">Receipts</button><button class="btn btn-secondary btn-sm" data-act="export-csv" data-k="clients">Clients</button></div>`)}
-    ${row('Session', 'The access code is set in Netlify (ACCESS_CODE).', `<button class="btn btn-secondary btn-sm" data-act="lock">${ic('lock')}Lock now</button>`)}
-    ${row('Erase all data', `Deletes every document, client and setting${MODE === 'cloud' ? ' from the database and all devices' : ''}.`, `<button class="btn btn-danger-soft btn-sm" data-act="wipe">${ic('trash')}Erase everything</button>`)}`;
-  return {
-    title: 'Settings',
-    topbar: { crumbs: [['Settings', '#/settings'], [SET_TABS.find(t => t[0] === tab)[1]]] },
-    html: `<div class="content">
-      ${pageHead('Settings', 'Changes save automatically.')}
-      <div class="settings">
-        <nav class="settings-nav" aria-label="Settings sections">${SET_TABS.map(([k, l, i]) => `<a class="nav-link ${k === tab ? 'active' : ''}" href="#/settings/${k}">${ic(i)}<span>${l}</span></a>`).join('')}</nav>
-        <section class="card"><div class="card-body" style="padding-top:4px;padding-bottom:4px">${body}</div></section>
-      </div>
-    </div>`,
-    mount(el) {
-      const NUMS = ['taxRate', 'dueDays', 'nextInv', 'nextRct', 'numberDigits'];
-      const saveSettings = debounce(() => { putSettings(); }, 400);
-      el.addEventListener('input', e => {
-        const k = e.target.dataset.s; if (!k) return;
-        let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-        if (NUMS.includes(k)) v = k === 'taxRate' ? num(v) : Math.max(k === 'dueDays' ? 0 : 1, Math.floor(num(v)) || (k === 'dueDays' ? 0 : k === 'numberDigits' ? 4 : 1));
-        if (k === 'numberDigits') v = Math.min(8, v);
-        S()[k] = v; saveSettings();
-        const ni = $('#next-inv', el), nr = $('#next-rct', el);
-        if (ni) ni.textContent = nextNumber('invoice'); if (nr) nr.textContent = nextNumber('receipt');
-        if (k === 'businessName') paintAccount();
-      });
-    }
-  };
-}
 function handleLogoFile(file) {
   if (!file || !/^image\//.test(file.type)) { toast('Choose a PNG or JPG image.', { error: true }); return; }
   const img = new Image();
@@ -1481,9 +1431,6 @@ function handleLogoFile(file) {
   img.src = URL.createObjectURL(file);
 }
 
-/* =====================================================================
-   Data tools
-   ===================================================================== */
 function download(name, text, type) {
   const blob = new Blob([text], { type }); const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
@@ -1513,80 +1460,79 @@ function exportBackup() {
   UI.lastBackup = Date.now(); saveUI(); toast('Backup exported'); if (current.name === 'settings') renderRoute(true);
 }
 
+
 /* =====================================================================
    Actions (event delegation)
    ===================================================================== */
 const ACTIONS = {
-  drawer: () => setDrawer(!$('#app').classList.contains('drawer-open')),
   collapse: () => { const c = !$('#app').classList.contains('collapsed'); UI.sidebar = c ? 'collapsed' : 'expanded'; saveUI(); applySidebarMode(); },
   'toggle-theme': () => setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'),
   'set-theme': ds => setTheme(ds.k),
-  'set-sidebar': ds => { UI.sidebar = ds.k; saveUI(); applySidebarMode(); renderRoute(true); },
   'search-mobile': openMobileSearch,
   account: (ds, el) => showMenu(el, [
     { heading: S().businessName },
-    { label: 'Business profile', icon: 'user', onClick: () => go('#/settings/business') },
-    { label: 'Appearance', icon: 'sun', onClick: () => go('#/settings/appearance') },
-    { label: 'Data and backups', icon: 'download', onClick: () => go('#/settings/data') },
+    { label: 'Your business', icon: 'user', onClick: () => go('#/settings/business') },
+    { label: 'Backup and data', icon: 'download', onClick: () => go('#/settings/data') },
     'sep', { label: 'Lock', icon: 'lock', onClick: () => lockApp() }
   ], { above: true, alignLeft: true, width: 220 }),
   'sync-now': () => {
     if (MODE !== 'cloud') { toast('Records are saved on this device only.'); return; }
-    if (!navigator.onLine) { toast('You’re offline. Changes are kept and upload when you reconnect.'); return; }
-    sync().then(() => { if (syncState === 'synced') toast('Everything is up to date'); });
+    if (!navigator.onLine) { toast('You’re offline. Everything is kept and will upload when you reconnect.'); return; }
+    sync().then(() => { if (syncState === 'synced') toast('Everything is saved online'); });
   },
-  'dash-period': ds => { UI.dashPeriod = ds.k; saveUI(); renderRoute(true); },
-  'dash-months': ds => { UI.dashMonths = +ds.k; saveUI(); renderRoute(true); },
-  'goto-filter': ds => { LS.invoices.status = ds.f; LS.invoices.page = 1; go('#/invoices'); },
-  sort: ds => { const st = LS[ds.list]; if (st.sort === ds.k) st.dir = st.dir === 'asc' ? 'desc' : 'asc'; else { st.sort = ds.k; st.dir = ['client', 'name', 'number'].includes(ds.k) ? 'asc' : 'desc'; } refreshList(); },
-  page: ds => { LS[ds.list].page += +ds.d; refreshList(); $('#list-body').scrollIntoView({ block: 'start', behavior: 'smooth' }); },
-  'inv-status': ds => { LS.invoices.status = ds.k; LS.invoices.page = 1; refreshList(); },
-  'clear-filters': ds => { Object.assign(LS[ds.list], { q: '', status: 'all', period: 'all', client: '', page: 1 }); renderRoute(true); },
+  'goto-filter': ds => { Object.assign(LS.invoices, { status: ds.f, period: 'all', limit: 30 }); go('#/invoices'); },
+  'home-tab': ds => { UI.homeTab = ds.k; saveUI(); renderRoute(true); },
+  'inv-status': ds => { LS.invoices.status = ds.k; LS.invoices.limit = 30; $$('.quick .chip').forEach(c => c.classList.toggle('on', c.dataset.k === ds.k)); $('#list-body').innerHTML = listBodyHTML('invoices'); },
+  filters: ds => openFilters(ds.list),
+  'clear-filters': ds => { Object.assign(LS[ds.list], { q: '', status: 'all', period: 'all', client: '', sort: 'issueDate', dir: 'desc', limit: 30 }); renderRoute(true); },
+  'more-rows': ds => { LS[ds.list].limit += 30; $('#list-body').innerHTML = listBodyHTML(ds.list); },
   'doc-menu': (ds, el) => { const d = findDoc(ds.id); if (d) docMenu(d, el, !!ds.detail); },
   dl: (ds, el) => { const d = findDoc(ds.id); if (d) actDownload(d, el); },
   print: ds => { const d = findDoc(ds.id); if (d) printDoc(d); },
   share: ds => { const d = findDoc(ds.id); if (d) actShare(d); },
-  finalize: ds => { const d = findDoc(ds.id); if (!d) return; if (!d.client || !d.client.name || !(d.items || []).some(i => i.desc)) { toast('Add a client and items before finalizing.', { error: true }); go(`#/invoices/${d.id}/edit`); return; } putDoc({ ...d, status: 'issued' }); toast(`${d.number} is ready to send`); refreshView(); },
+  'view-doc': ds => { const d = findDoc(ds.id); if (d) openDocView(d); },
+  finalize: ds => { const d = findDoc(ds.id); if (!d) return; if (!d.client || !d.client.name || !(d.items || []).some(i => i.desc)) { toast('Add a client and items first.', { error: true }); go(`#/invoices/${d.id}/edit`); return; } putDoc({ ...d, status: 'issued', biz: d.biz || snapshotBiz() }); toast(`${d.number} is ready to send`); refreshView(); },
   'rc-void': ds => { const r = findDoc(ds.id); if (r) voidReceipt(r); },
   'rc-restore': ds => { const r = findDoc(ds.id); if (r) restoreReceipt(r); },
   // editors
-  'ed-tab': ds => setEditorTab(ds.k),
-  'ed-more': (ds, el) => showMenu(el, [
-    { label: 'Download PDF', icon: 'download', onClick: () => actDownload(draft) },
-    { label: 'Print', icon: 'print', onClick: () => printDoc(draft) },
-    'sep', { label: 'Discard changes', icon: 'close', danger: true, onClick: () => { dirty = false; go(draft && !draft._isNew ? `#/invoices/${draft.id}` : '#/invoices'); } }
-  ]),
+  'pick-client': () => pickClient(c => {
+    if (draft.type === 'receipt') { setReceiptClient(c); return; }
+    draft.clientId = c.id; draft.client = snap(c); dirty = true;
+    $('#client-slot').innerHTML = clientRowHTML(draft); refreshInvoice();
+    if (!draft.items.length) setTimeout(() => itemSheet(), 260);   // guide straight to the next step
+  }),
+  'item-add': () => itemSheet(),
+  'item-edit': ds => itemSheet(ds.id),
+  'ed-options': () => customizeSheet(),
+  'ed-preview': () => {
+    if (!draft) return;
+    const isR = draft.type === 'receipt';
+    if (!isR && draft._isNew && !draft._numberCustom) draft.number = nextNumber('invoice');
+    if (isR && draft._isNew && !draft._numberCustom) draft.number = nextNumber('receipt');
+    openDocView(draft, { title: 'Preview', footer: isR ? `<button class="btn btn-primary btn-block" data-act="rc-save">${draft._isNew ? 'Save receipt' : 'Save changes'}</button>` : `<button class="btn btn-primary btn-block" data-act="inv-save" data-mode="final">${draft._isNew || draft.status === 'draft' ? 'Create invoice' : 'Save changes'}</button>` });
+  },
   'inv-save': (ds, el) => saveInvoice(ds.mode, el),
   'rc-save': (ds, el) => saveReceipt(el),
-  'item-add': () => addItem(),
-  'item-del': ds => { draft.items = draft.items.length > 1 ? draft.items.filter(i => i.id !== ds.id) : [{ id: uid(), desc: '', qty: 1, price: '' }]; dirty = true; renderItems(); refreshInvoice(); },
-  'item-catalog': (ds, el) => {
-    if (!DB.products.length) { showMenu(el, [{ heading: 'No saved products yet' }, { label: 'Add products and services', icon: 'plus', onClick: () => { dirty = false; go('#/products'); } }], { alignLeft: true, width: 260 }); return; }
-    showMenu(el, [...DB.products].sort((a, b) => a.name.localeCompare(b.name)).map(p => ({ label: `${p.name}   ${money(num(p.price), p.currency || draft.currency)}`, icon: 'box', onClick: () => addItem({ desc: p.description ? `${p.name}\n${p.description}` : p.name, price: String(num(p.price)), productId: p.id }) })), { alignLeft: true, width: 300 });
+  'rc-link': ds => {
+    const r = draft;
+    if (ds.id) { const inv = findDoc(ds.id); r.linkedInvoiceId = inv.id; r.invoiceNumber = inv.number; r.currency = inv.currency; r._linkChoice = inv.id; if (!toCents(r.amount)) r.amount = balances(inv).balance.toFixed(2); if (!r.description || /^Invoice /.test(r.description)) r.description = `Invoice ${inv.number}`; }
+    else { r.linkedInvoiceId = null; r.invoiceNumber = ''; r._linkChoice = 'none'; if (/^Invoice /.test(r.description || '')) r.description = ''; }
+    dirty = true; renderReceiptForm();
   },
-  'disc-type': ds => { draft.discountType = ds.v; $$('#disc-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === ds.v)); dirty = true; refreshInvoice(); },
-  tpl: ds => { draft.template = ds.k; $$('[data-act="tpl"]').forEach(b => b.classList.toggle('on', b.dataset.k === ds.k)); dirty = true; refreshInvoice(); },
-  'client-change': () => { draft.clientId = null; draft.client = { name: '', email: '', phone: '', address: '' }; draft._cmode = 'pick'; dirty = true; draft._rerenderClient(); setTimeout(() => { const c = $('#client-combo'); if (c) c.focus(); }, 30); },
-  'client-edit-inline': () => { draft._cmode = 'edit'; draft._rerenderClient(); },
-  'client-pick': () => { if (draft._cmode === 'new') { draft.client = { name: '', email: '', phone: '', address: '' }; draft._cmode = 'pick'; } else draft._cmode = 'card'; draft._rerenderClient(); },
-  'rc-mode': ds => { if (draft._mode === ds.k) return; draft._mode = ds.k; if (ds.k === 'standalone') { draft.linkedInvoiceId = null; draft.invoiceNumber = ''; draft.description = ''; draft.client = { name: '', email: '', phone: '', address: '' }; draft.clientId = null; draft._cmode = 'pick'; } else { draft.linkedInvoiceId = null; } dirty = true; renderReceiptForm(); },
-  'rc-inv-change': () => { draft.linkedInvoiceId = null; draft.amount = ''; renderReceiptForm(); },
-  'rc-full': () => { const max = maxAllowedCents(); if (isFinite(max)) { draft.amount = String(fromCents(max)); $('#r-amt').value = draft.amount; validateAmount(false); dirty = true; refreshReceipt(); } },
-  // clients & products
+  'rc-full': () => { const max = maxAllowedCents(); if (isFinite(max)) { draft.amount = fromCents(max).toFixed(2); $('#r-amt').value = draft.amount; validateAmount(false); dirty = true; refreshReceipt(); } },
+  'rc-method': ds => { draft.paymentMethod = ds.m; $$('[data-act="rc-method"]').forEach(b => b.classList.toggle('on', b.dataset.m === ds.m)); dirty = true; refreshReceipt(); },
+  'rc-options': () => receiptOptions(),
+  // clients & items
   'client-new': () => clientDialog(),
   'client-edit': ds => clientDialog(ds.id),
   'client-tab': ds => { clientTab = ds.k; renderRoute(true); },
   'client-menu': (ds, el) => { const c = findClient(ds.id); if (!c) return; showMenu(el, [
-    !ds.detail && { label: 'View profile', icon: 'eye', onClick: () => go(`#/clients/${c.id}`) },
-    { label: 'Edit', icon: 'edit', onClick: () => clientDialog(c.id) },
+    { label: 'Edit details', icon: 'edit', onClick: () => clientDialog(c.id) },
     { label: 'New invoice', icon: 'invoice', onClick: () => go(`#/invoices/new?client=${c.id}`) },
-    { label: 'New receipt', icon: 'receipt', onClick: () => go(`#/receipts/new?client=${c.id}&mode=standalone`) },
-    'sep', { label: 'Delete client', icon: 'trash', danger: true, onClick: () => deleteClient(c) }].filter(Boolean)); },
+    { label: 'Record payment', icon: 'receipt', onClick: () => go(`#/receipts/new?client=${c.id}`) },
+    'sep', { label: 'Delete client', icon: 'trash', danger: true, onClick: () => deleteClient(c) }]); },
   'product-new': () => productDialog(),
   'product-edit': ds => productDialog(ds.id),
-  'product-menu': (ds, el) => { const p = DB.products.find(x => x.id === ds.id); if (!p) return; showMenu(el, [
-    { label: 'Edit', icon: 'edit', onClick: () => productDialog(p.id) },
-    { label: 'Delete', icon: 'trash', danger: true, onClick: async () => { if (await confirmDialog({ title: `Delete ${p.name}?`, message: 'Invoices that already use it are not affected.', ok: 'Delete', danger: true })) { delProduct(p.id); toast(`${p.name} deleted`); refreshView(); } } }]); },
   // reports & settings
   'rp-period': ds => { RP.period = ds.k; renderRoute(true); },
   'set-tpl': ds => { S().template = ds.k; putSettings(); renderRoute(true); },
@@ -1598,34 +1544,24 @@ const ACTIONS = {
   import: () => $('#import-file').click(),
   lock: () => lockApp(),
   wipe: async () => {
-    if (!(await confirmDialog({ title: 'Erase all data?', message: `Every document, client, product and setting will be deleted${MODE === 'cloud' ? ' from the database and every device' : ''}. Export a backup first if you might need them.`, ok: 'Erase everything', danger: true }))) return;
+    if (!(await confirmDialog({ title: 'Erase all data?', message: `Every invoice, receipt, client and setting will be deleted${MODE === 'cloud' ? ' on every device' : ''}. Download a backup first if you might need them.`, ok: 'Erase everything', danger: true }))) return;
     replaceAll(normalize({ settings: defaultSettings() })); go('#/dashboard'); toast('All data erased');
   }
 };
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
-  if (el && ACTIONS[el.dataset.act]) { e.preventDefault(); e.stopPropagation(); ACTIONS[el.dataset.act](el.dataset, el, e); return; }
-  const row = e.target.closest('[data-href]');
-  if (row && !e.target.closest('a,button,input,select,textarea')) { go(row.dataset.href); return; }
-  if (e.target.closest('.sidebar a') && mq('(max-width:767px)')) setDrawer(false);
+  if (el && ACTIONS[el.dataset.act]) { e.preventDefault(); ACTIONS[el.dataset.act](el.dataset, el, e); }
 });
-$('#scrim').addEventListener('click', () => setDrawer(false));
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    if (dialogs.length) { dialogs[dialogs.length - 1].close(); return; }
-    if ($('#app').classList.contains('drawer-open')) { setDrawer(false); return; }
-    closeMenu();
-  }
+  if (e.key === 'Escape') { if (dialogs.length) { dialogs[dialogs.length - 1].close(); return; } closeMenu(); }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !$('#app').hidden) { e.preventDefault(); const g = $('#gsearch'); if (g && g.offsetParent) g.focus(); else openMobileSearch(); }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's' && draft) { e.preventDefault(); if (draft.type === 'invoice') saveInvoice('final'); else saveReceipt(); }
-  if (e.key === 'Enter' && e.target.matches('[data-href]')) go(e.target.dataset.href);
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"][data-act]')) { e.preventDefault(); e.target.click(); }
 });
 $('#import-file').addEventListener('change', async e => {
   const file = e.target.files[0]; e.target.value = ''; if (!file) return;
   let data; try { data = JSON.parse(await file.text()); } catch { toast('That file isn’t a Kuzelle backup.', { error: true }); return; }
   if (!data || !Array.isArray(data.docs) || !data.settings) { toast('That file isn’t a Kuzelle backup.', { error: true }); return; }
-  if (!(await confirmDialog({ title: 'Restore this backup?', message: `It has ${plural(data.docs.length, 'document')} and ${plural((data.clients || []).length, 'client')}. It replaces the current records${MODE === 'cloud' ? ' on every device' : ''}.`, ok: 'Restore' }))) return;
+  if (!(await confirmDialog({ title: 'Restore this backup?', message: `It has ${plural(data.docs.length, 'document')} and ${plural((data.clients || []).length, 'client')}. It replaces what’s here now${MODE === 'cloud' ? ' on every device' : ''}.`, ok: 'Restore' }))) return;
   replaceAll(normalize(data)); toast('Backup restored'); renderRoute();
 });
 $('#logo-file').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; handleLogoFile(f); });
@@ -1672,6 +1608,7 @@ async function check() {
 function unlock() {
   $('#lock').hidden = true; $('#app').hidden = false;
   $('#sidebar').innerHTML = sidebarHTML();
+  $('#tabbar').innerHTML = tabbarHTML();
   applySidebarMode();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   renderRoute();
@@ -1691,6 +1628,7 @@ document.addEventListener('visibilitychange', () => {
   if (!sessionValid()) { lockApp(); return; }
   sync();
 });
+
 
 /* =====================================================================
    Boot
