@@ -1,0 +1,16 @@
+{
+  "name": "Kuzelle Invoices",
+  "short_name": "Kuzelle",
+  "description": "Invoices and receipts for Kuzelle",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EDEEF0",
+  "theme_color": "#EDEEF0",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
